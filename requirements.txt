@@ -1,0 +1,9 @@
+minari
+gymnasium-robotics
+torch
+pytorch-mppi
+numpy
+tqdm
+mujoco
+scipy
+pyyaml

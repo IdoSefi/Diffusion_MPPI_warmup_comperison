@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+logs/
+logs_*/
+old_logs/
+bad/
+*_fix/
+*fixed/
