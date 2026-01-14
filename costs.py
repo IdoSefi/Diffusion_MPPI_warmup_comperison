@@ -73,7 +73,8 @@ def mppi_running_cost(state, action, maze_handler=None, distance_map=None, devic
         speed = torch.norm(vel, dim=-1)
         k_braking = 0.15  # Tuning parameter: "seconds of lookahead"
         
-        dynamic_margin = base_margin + (k_braking * speed)
+        #dynamic_margin = base_margin + (k_braking * speed) #TODO disable dynamic margin for now
+        dynamic_margin = base_margin
         
         # Use dynamic_margin instead of fixed margin
         clearance_cost = W_CLEARANCE * torch.relu(dynamic_margin - d_wall) ** 2

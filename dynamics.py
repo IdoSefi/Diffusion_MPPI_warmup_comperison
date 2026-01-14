@@ -7,7 +7,8 @@ class AnalyticDoubleIntegrator(nn.Module):
         super().__init__()
         self.device = device
         self.maze_handler = maze_handler
-        # Parameters (scalars, but could be tensors if needed)
+        
+        # Physics Parameters
         self.dt = DT
         self.damping = DAMPING
         self.k = K_CONTROL
@@ -17,55 +18,48 @@ class AnalyticDoubleIntegrator(nn.Module):
     def forward(self, state, action):
         """
         state: (B, 6) -> [x, y, vx, vy, gx, gy]
-        action: (B, 2) -> [ux, uy] (assumed in [-1, 1])
-        
-        Returns:
-            next_state: (B, 6)
+        action: (B, 2) -> [ux, uy]
         """
         # Unpack state
         pos = state[:, 0:2]
         vel = state[:, 2:4]
-        goal = state[:, 4:6]  # Goal is constant in dynamics
+        goal = state[:, 4:6]
         
-        # Dynamics: v_next = v + (k*u - damping*v) * dt
-        # Note: action is already clipped to [-1, 1] by the controller usually, 
-        # but we assume incoming action is raw and might need clipping if not handled elsewhere.
-        # However, for analytic physics, we usually just apply the formula.
+        # 1. Clip action to [-1, 1] (Simulate Actuator Limits)
+        action = torch.clamp(action, -1.0, 1.0)
         
-        # Acceleration
+        # 2. Dynamics: Acceleration = (Force - Damping * Velocity) / Mass
+        # Assuming Mass = 1.0 for PointMaze
         acc = self.k * action - self.damping * vel
         
+        # 3. Semi-Implicit Euler Integration (More stable for damped systems)
+        # Update velocity first
         next_vel = vel + acc * self.dt
         
-        # Clip velocity
+        # Clip velocity (Environment speed limit)
         next_vel = torch.clamp(next_vel, self.vmin, self.vmax)
         
-        # Position update: p_next = p + v_next * dt (Symplectic Euler-ish or just explicit Euler)
-        # Using next_vel for position update is more stable (semi-implicit Euler)
+        # Update position using the NEW velocity
         next_pos = pos + next_vel * self.dt
         
         # --- Collision Handling ---
         if self.maze_handler is not None:
-            # Discrete collision check at next state
-            dummy_next_state = torch.cat(
-                [next_pos, torch.zeros_like(next_pos), torch.zeros_like(next_pos)], dim=-1
-            )
-            is_collision = self.maze_handler.check_collision_batch(dummy_next_state)
+            # Discrete Check (Target Position)
+            dummy_next = torch.cat([next_pos, torch.zeros_like(next_pos), torch.zeros_like(next_pos)], dim=-1)
+            is_collision = self.maze_handler.check_collision_batch(dummy_next)
 
-            # Continuous collision along the segment (anti-tunneling): check a few interpolated points.
-            alphas = torch.tensor([0.25, 0.5, 0.75], device=state.device, dtype=next_pos.dtype)
-            seg_pos = pos.unsqueeze(1) + alphas.view(1, -1, 1) * (next_pos - pos).unsqueeze(1)
-            dummy_seg = torch.cat(
-                [seg_pos, torch.zeros_like(seg_pos), torch.zeros_like(seg_pos)], dim=-1
-            )
-            seg_collision = self.maze_handler.check_collision_batch(dummy_seg).any(dim=-1)
-
-            is_collision = is_collision | seg_collision
+            # Continuous Check (Midpoint to prevent tunneling)
+            mid_pos = (pos + next_pos) / 2.0
+            dummy_mid = torch.cat([mid_pos, torch.zeros_like(mid_pos), torch.zeros_like(mid_pos)], dim=-1)
+            mid_collision = self.maze_handler.check_collision_batch(dummy_mid)
+            
+            is_collision = is_collision | mid_collision
+            
+            # Inelastic Collision Response (Stop at wall)
             mask = is_collision.unsqueeze(-1)
+            next_pos = torch.where(mask, pos, next_pos) # Stay at previous pos
+            next_vel = torch.where(mask, torch.zeros_like(next_vel), next_vel) # Kill velocity
 
-            next_pos = torch.where(mask, pos, next_pos)
-            next_vel = torch.where(mask, torch.zeros_like(next_vel), next_vel)
-
-# Concat back
+        # Reassemble State
         next_state = torch.cat([next_pos, next_vel, goal], dim=1)
         return next_state

@@ -9,15 +9,14 @@ import torch
 import minari
 import gymnasium as gym
 
-from config import ENV_ID, DATASET_ID, SEED, DEVICE
+from config import ENV_ID, DATASET_ID, SEED, DEVICE, DT
 from env_utils import parse_obs, MazeHandler
 from mppi_controller import MPPIController
 from grid_viz import GridVideoWriter, GridVideoConfig
 
-# Create logs dir
-os.makedirs("logs", exist_ok=True)
-
 def run_eval(args):
+    # Create logs dir
+    os.makedirs(args.logs_dir, exist_ok=True)
     print(f"Loading Minari dataset: {DATASET_ID}")
         
     dataset = minari.load_dataset(DATASET_ID, download=False)
@@ -28,7 +27,7 @@ def run_eval(args):
     if args.save_video:
         env = gym.wrappers.RecordVideo(
             env,
-            video_folder="logs/videos",
+            video_folder=f"{args.logs_dir}/videos",
             episode_trigger=lambda x: True,
             name_prefix="mppi_eval"
         )
@@ -48,7 +47,7 @@ def run_eval(args):
     # Optional 2D grid video (no MuJoCo rendering): overlay planned MPPI horizon on the occupancy grid.
     grid_video_enabled = bool(getattr(args, "save_grid_video", False)) and (maze_handler.maze_map is not None)
     if grid_video_enabled:
-        os.makedirs("logs/grid_videos", exist_ok=True)
+        os.makedirs(f"{args.logs_dir}/grid_videos", exist_ok=True)
         grid_cfg = GridVideoConfig(
             fps=int(getattr(args, "grid_video_fps", 20)),
             cell_px=int(getattr(args, "grid_cell_px", 24)),
@@ -104,7 +103,7 @@ def run_eval(args):
         grid_writer = None
         executed_rc = []
         if grid_video_enabled:
-            out_path = f"logs/grid_videos/mppi_grid_ep{ep+1}.mp4"
+            out_path = f"{args.logs_dir}/grid_videos/mppi_grid_ep{ep+1}.mp4"
             grid_writer = GridVideoWriter(maze_handler.maze_map, out_path, cfg=grid_cfg)
 
         
@@ -131,6 +130,7 @@ def run_eval(args):
         done = False
         step = 0
         success = False
+        collision_count = 0
         
         ep_start_time = time.time()
         
@@ -185,6 +185,35 @@ def run_eval(args):
             done = terminated or truncated
             step += 1
             
+            # Check collision
+            base_env = env.unwrapped
+            is_hard_collision = False
+            
+            if hasattr(base_env, "data"):
+                # 1. Get agent speed (magnitude of XY velocity)
+                # We use this to define "Hard" collision.
+                agent_vel = base_env.data.qvel[:2]
+                speed = np.linalg.norm(agent_vel)
+                
+                # Thresholds
+                SPEED_THRESHOLD = 0.5  # Adjust this: 0.5 m/s is a reasonable "hit"
+                VERTICAL_TOLERANCE = 0.8 # Filter out floor (Z-component of normal)
+
+                for i in range(base_env.data.ncon):
+                    contact = base_env.data.contact[i]
+                    normal_z = contact.frame[2]
+                    
+                    is_wall = abs(normal_z) < VERTICAL_TOLERANCE
+                    
+                    # 3. Register collision if it's a Wall AND we are moving fast enough
+                    if is_wall and speed > SPEED_THRESHOLD:
+                        is_hard_collision = True
+                        break
+            
+            if is_hard_collision:
+                collision_count += 1
+
+            
             # Check success (PointMaze usually has 'is_success' in info)
             if info.get('is_success', False):
                 success = True
@@ -213,8 +242,12 @@ def run_eval(args):
         results["episodes"].append({
             "episode": ep,
             "steps": step,
+            "total_wall_clock_time_sec": time.time() - ep_start_time,
+            "total_env_time_sec": info.get("time_env_steps_sec", None),
+            "total_env_time_our_simple_sec": step * DT,
             "success": bool(success),
-            "latency_mean": float(np.mean(latencies[-step:]))
+            "latency_mean": float(np.mean(latencies[-step:])),
+            "collisions": collision_count
         })
         
         if success:
@@ -231,11 +264,12 @@ def run_eval(args):
     print("\n=== Eval Summary ===")
     print(json.dumps(summary, indent=2))
     
-    with open("logs/vanilla_mppi_results.json", "w") as f:
+    with open(f"{args.logs_dir}/vanilla_mppi_results.json", "w") as f:
         json.dump(results, f, indent=2)
-    print("Saved logs/vanilla_mppi_results.json")
+    print(f"Saved {args.logs_dir}/vanilla_mppi_results.json")
     
     env.close()
+    
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -248,6 +282,7 @@ if __name__ == "__main__":
     parser.add_argument("--plan_with_BFS", action="store_true", help="Use BFS distance field for planning")
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--plan_iteration", type=int, default=1)
+    parser.add_argument("--logs_dir", type=str, default="logs", help="Directory to save logs and videos")
     args = parser.parse_args()
     
     run_eval(args)

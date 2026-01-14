@@ -7,3 +7,5 @@ tqdm
 mujoco
 scipy
 pyyaml
+diffusers
+wandb

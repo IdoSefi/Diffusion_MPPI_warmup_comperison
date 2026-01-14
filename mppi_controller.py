@@ -97,11 +97,7 @@ class MPPIController:
                         
                     # 3. Update state using actual dynamics (which handles collision response)
                     curr_state = self.dynamics_model.forward(curr_state, u)
-                
-                if trajectory_collisions:
-                    print(f"[MPPI DEBUG] Collisions detected in selected horizon at steps: {trajectory_collisions}")
-                else:
-                    #print(f"[MPPI DEBUG] Selected horizon is collision-free.")
+
                     pass
         
         return action_t.cpu().detach().numpy()
