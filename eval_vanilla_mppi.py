@@ -9,10 +9,15 @@ import torch
 import minari
 import gymnasium as gym
 
-from config import ENV_ID, DATASET_ID, SEED, DEVICE, DT
+from config import ENV_ID, DATASET_ID, SEED, DEVICE, DT, HORIZON
 from env_utils import parse_obs, MazeHandler
 from mppi_controller import MPPIController
 from grid_viz import GridVideoWriter, GridVideoConfig
+
+#diffusion models
+from diffusers import DDPMScheduler
+from diffusion_model_sampling import sample_action_trajectory
+from diffusion_model_factory import build_denoiser 
 
 def run_eval(args):
     # Create logs dir
@@ -82,6 +87,36 @@ def run_eval(args):
     
     # Initialize implementation
     controller = MPPIController(maze_handler=maze_handler, device=DEVICE, plan_iteration=args.plan_iteration)
+
+    #diffusion model initialization
+    if args.use_diffusion_policy: #TODO make this argument be condition on plan_method
+        assert args.diff_ckpt is not None, "--diff_ckpt is required when --use_diffusion_policy is set"
+
+        action_dim = int(np.prod(env.action_space.shape))
+        cond_dim = 6  # parse_obs gives [x, y, vx, vy, gx, gy]
+
+        diff_model = build_denoiser(
+            arch=args.diff_arch,
+            horizon=HORIZON,
+            action_dim=action_dim,
+            cond_dim=cond_dim,
+        ).to(DEVICE)
+
+        ckpt = torch.load(args.diff_ckpt, map_location="cpu")
+        state_dict = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
+        diff_model.load_state_dict(state_dict)
+        diff_model.eval()
+
+        diff_sched = DDPMScheduler(
+            num_train_timesteps=args.diff_num_train_timesteps,
+            beta_start=args.diff_beta_start,
+            beta_end=args.diff_beta_end,
+            beta_schedule=args.diff_beta_schedule,
+            prediction_type="epsilon",   # match what you trained
+            clip_sample=False,
+        )
+        print(f"diffusion model of arch {args.diff_arch} initialized on {DEVICE}")
+
     print(f"MPPI Controller initialized on {DEVICE}")
     print("Controller has maze handler:", controller.maze_handler is not None)
     print("Controller wall dist map exists:", getattr(controller.maze_handler, "wall_dist_map", None) is not None)
@@ -143,7 +178,22 @@ def run_eval(args):
             
             # Plan
             t0 = time.time()
-            action = controller.get_action(state_np)
+            if args.plan_method == "diffusion_only":
+                with torch.no_grad():
+                    u_traj = sample_action_trajectory(
+                        model=diff_model,
+                        scheduler=diff_sched,
+                        cond=state_np,  # numpy (6,)
+                        num_inference_steps=args.diff_num_inference_steps,
+                        device=DEVICE,
+                        return_numpy=True,
+                    )  # (HORIZON, action_dim), numpy 
+
+                action = u_traj[0]  # first action of the sampled plan (receding horizon) 
+            elif args.plan_method == "mppi_only":
+                action = controller.get_action(state_np)
+            else:
+                raise ValueError(f"Unknown plan_method: {args.plan_method}")
             t1 = time.time()
             latencies.append((t1 - t0) * 1000) # ms
 
@@ -283,6 +333,18 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--plan_iteration", type=int, default=1)
     parser.add_argument("--logs_dir", type=str, default="logs", help="Directory to save logs and videos")
+    parser.add_argument("--plan_method", type=str, default="diffusion_only", help="Planning method: diffusion_only or mppi_only")
+
+    ##diffusion:
+    parser.add_argument("--use_diffusion_policy", action="store_true", help="If set, action comes from diffusion (first action of sampled trajectory)")
+    parser.add_argument("--diff_arch", type=str, default="mlp", choices=["mlp", "cnn", "transformer"])
+    parser.add_argument("--diff_ckpt", type=str, default=None, help="Path to diffusion checkpoint (.pt)")
+    parser.add_argument("--diff_num_train_timesteps", type=int, default=1000)
+    parser.add_argument("--diff_num_inference_steps", type=int, default=50)
+    parser.add_argument("--diff_beta_start", type=float, default=1e-4)
+    parser.add_argument("--diff_beta_end", type=float, default=2e-2)
+    parser.add_argument("--diff_beta_schedule", type=str, default="linear", choices=["linear", "scaled_linear", "squaredcos_cap_v2"])
+
     args = parser.parse_args()
     
     run_eval(args)

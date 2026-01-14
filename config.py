@@ -1,8 +1,8 @@
 import torch
 
 # Environment
-ENV_ID = "PointMaze_Large-v3"
-DATASET_ID = "D4RL/pointmaze/large-v2"
+ENV_ID = "PointMaze_UMaze-v3"
+DATASET_ID = "D4RL/pointmaze/umaze-v2"
 
 # Dynamics
 DT = 0.02  
