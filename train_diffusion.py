@@ -30,7 +30,7 @@ import argparse
 import importlib
 import os
 import time
-from dataclasses import asdict
+from copy import deepcopy
 from typing import Any, Dict, Tuple
 
 import numpy as np
@@ -118,6 +118,7 @@ def sample_sanity_check(
     Optional sampling sanity-check: start from Gaussian noise and denoise.
     This is only for debugging / monitoring; your real planning will likely differ.
     """
+    was_training = model.training
     model.eval()
     device = cond.device
 
@@ -132,10 +133,19 @@ def sample_sanity_check(
         step_out = scheduler.step(eps_hat, t, x)
         x = step_out.prev_sample
 
-    return x.clamp(-1.0, 1.0)
+    out = x.clamp(-1.0, 1.0)
+    model.train(was_training)
+    return out
 
 
-def save_checkpoint(path: str, model: nn.Module, optimizer: torch.optim.Optimizer, step: int, args: argparse.Namespace):
+def save_checkpoint(
+    path: str,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    step: int,
+    args: argparse.Namespace,
+    ema_state: Dict[str, torch.Tensor] | None = None,
+):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     payload = {
         "model_state": model.state_dict(),
@@ -143,16 +153,37 @@ def save_checkpoint(path: str, model: nn.Module, optimizer: torch.optim.Optimize
         "step": step,
         "args": vars(args),
     }
+    if ema_state is not None:
+        payload["ema_state"] = ema_state
     torch.save(payload, path)
 
 
-def load_checkpoint(path: str, model: nn.Module, optimizer: torch.optim.Optimizer | None = None):
+def load_checkpoint(
+    path: str,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer | None = None,
+    ema_model: nn.Module | None = None,
+):
     ckpt = torch.load(path, map_location="cpu")
     model.load_state_dict(ckpt["model_state"], strict=True)
     if optimizer is not None and "optimizer_state" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer_state"])
+    if ema_model is not None and "ema_state" in ckpt:
+        ema_model.load_state_dict(ckpt["ema_state"], strict=True)
     step = int(ckpt.get("step", 0))
     return step, ckpt
+
+
+def update_ema(ema_model: nn.Module, model: nn.Module, decay: float) -> None:
+    if ema_model is None:
+        return
+    if decay <= 0.0:
+        return
+    with torch.no_grad():
+        for ema_param, param in zip(ema_model.parameters(), model.parameters()):
+            ema_param.copy_(ema_param * decay + param * (1.0 - decay))
+        for ema_buffer, buffer in zip(ema_model.buffers(), model.buffers()):
+            ema_buffer.copy_(buffer)
 
 
 @torch.no_grad()
@@ -173,6 +204,7 @@ def visualize_trajectories(
     
     Reuses sampling and visualization patterns from verify_dataset.py for consistency.
     """
+    was_training = model.training
     model.eval()
     
     # Initialize dynamics model (same as verify_dataset.py)
@@ -299,7 +331,7 @@ def visualize_trajectories(
     env.close()
     print(f"[viz] saved: {save_path}")
     
-    model.train()
+    model.train(was_training)
 
 
 def main():
@@ -313,12 +345,18 @@ def main():
 
     # Training
     parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--max_steps", type=int, default=0, help="Stop after this many steps (0 disables)")
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--num_workers", type=int, default=0)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--amp", action="store_true", help="Use mixed precision (CUDA only).")
+    parser.add_argument("--val_frac", type=float, default=0.05, help="Fraction of data for validation split")
+    parser.add_argument("--patience", type=int, default=10, help="Early stopping patience (in eval checks)")
+    parser.add_argument("--min_delta", type=float, default=0.0, help="Minimum delta for val improvement")
+    parser.add_argument("--eval_every_epochs", type=int, default=1, help="Validate every N epochs")
+    parser.add_argument("--ema_decay", type=float, default=0.9999, help="EMA decay (0 disables)")
 
     # Diffusion scheduler (training)
     parser.add_argument("--num_diffusion_steps", type=int, default=100)
@@ -335,7 +373,8 @@ def main():
 
     # Checkpointing / logging
     parser.add_argument("--out_dir", type=str, default="./checkpoints_diffusion")
-    parser.add_argument("--save_every_steps", type=int, default=2000)
+    parser.add_argument("--save_every_steps", type=int, default=0, help="Save checkpoint every N steps (0 disables)")
+    parser.add_argument("--save_every_epochs", type=int, default=50, help="Save checkpoint every N epochs")
     parser.add_argument("--log_every_steps", type=int, default=200)
     parser.add_argument("--resume", type=str, default="", help="Path to checkpoint .pt to resume from")
 
@@ -357,16 +396,57 @@ def main():
 
     set_seed(args.seed)
     device = torch.device(args.device)
+    pin_memory = device.type == "cuda"
+    persistent_workers = args.num_workers > 0
 
-    # Dataset / loader (your existing code)
+    # Dataset split + deterministic loaders
     dataset = MinariDiffusionDataset(args.dataset_id, horizon_T=args.horizon)
-    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, drop_last=True)
+    split_generator = torch.Generator().manual_seed(args.seed)
+    loader_generator = torch.Generator().manual_seed(args.seed)
+
+    val_len = 0
+    if args.val_frac > 0:
+        val_len = max(1, int(len(dataset) * args.val_frac))
+        if val_len >= len(dataset):
+            val_len = max(len(dataset) - 1, 0)
+    train_len = len(dataset) - val_len
+    if train_len <= 0:
+        raise ValueError("Validation split too large; no training samples remain.")
+
+    if val_len > 0:
+        train_ds, val_ds = torch.utils.data.random_split(
+            dataset, [train_len, val_len], generator=split_generator
+        )
+    else:
+        train_ds, val_ds = dataset, None
+
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        drop_last=True,
+        pin_memory=pin_memory,
+        persistent_workers=persistent_workers,
+        generator=loader_generator,
+    )
+    val_loader = None
+    if val_ds is not None:
+        val_loader = DataLoader(
+            val_ds,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=args.num_workers,
+            drop_last=False,
+            pin_memory=pin_memory,
+            persistent_workers=persistent_workers,
+        )
 
     # Infer dims from one batch (keeps this script architecture-agnostic)
-    first_batch = next(iter(loader))
+    first_batch = next(iter(train_loader))
     state_dim, action_dim, traj_dim, horizon = infer_dims_from_batch(first_batch)
     if horizon != args.horizon:
-        print(f"[WARN] loader horizon={horizon} differs from args.horizon={args.horizon}. Using loader horizon.")
+        print(f"[WARN] train loader horizon={horizon} differs from args.horizon={args.horizon}. Using loader horizon.")
         args.horizon = horizon
 
     # Build model kwargs; required keys for your arch
@@ -382,6 +462,12 @@ def main():
         dropout=args.dropout,
     )
     model = dynamic_load_model(args.model_module, args.model_class, model_kwargs).to(device)
+    ema_model = None
+    if args.ema_decay > 0:
+        ema_model = deepcopy(model).to(device)
+        ema_model.eval()
+        for p in ema_model.parameters():
+            p.requires_grad_(False)
 
     # Diffusers scheduler (handles add_noise / step)
     scheduler = DDPMScheduler(
@@ -393,6 +479,9 @@ def main():
     )
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scheduler_lr = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=3
+    )
 
     scaler = torch.cuda.amp.GradScaler(enabled=(args.amp and device.type == "cuda"))
 
@@ -423,6 +512,12 @@ def main():
                 "model_module": args.model_module,
                 "model_class": args.model_class,
                 "seed": args.seed,
+                "max_steps": args.max_steps,
+                "val_frac": args.val_frac,
+                "patience": args.patience,
+                "min_delta": args.min_delta,
+                "eval_every_epochs": args.eval_every_epochs,
+                "ema_decay": args.ema_decay,
             }
             wandb_kwargs = {
                 "project": args.wandb_project,
@@ -441,14 +536,17 @@ def main():
 
     global_step = 0
     if args.resume:
-        global_step, ckpt = load_checkpoint(args.resume, model, optimizer)
+        global_step, ckpt = load_checkpoint(args.resume, model, optimizer, ema_model)
         print(f"[RESUME] loaded step={global_step} from {args.resume}")
 
     model.train()
     t0 = time.time()
+    best_val_loss = float("inf")
+    epochs_since_improve = 0
+    stop_training = False
 
     for epoch in range(args.epochs):
-        for batch in loader:
+        for batch in train_loader:
             state = batch["state"].to(device)          # (B, state_dim)
             x0 = batch["traj_window"].to(device)       # (B, H, traj_dim)
 
@@ -482,6 +580,9 @@ def main():
             scaler.step(optimizer)
             scaler.update()
 
+            if ema_model is not None:
+                update_ema(ema_model, model, args.ema_decay)
+
             global_step += 1
 
             # Logging
@@ -505,51 +606,122 @@ def main():
 
             # Optional sampling sanity-check
             if args.sample_every_steps and (global_step % args.sample_every_steps == 0):
-                model.eval()
-                with torch.no_grad():
-                    cond_small = state[:8]
-                    samp = sample_sanity_check(
-                        model=model,
-                        scheduler=scheduler,
-                        cond=cond_small,
-                        horizon=args.horizon,
-                        traj_dim=traj_dim,
-                        state_dim=state_dim,
-                        num_inference_steps=args.num_inference_steps,
-                    )
-                    samp_mean = samp.mean().item()
-                    samp_std = samp.std().item()
-                    samp_min = samp.min().item()
-                    samp_max = samp.max().item()
-                    print(f"[sample] shape={tuple(samp.shape)} mean={samp_mean:.4f} std={samp_std:.4f}")
-                    
-                    if args.use_wandb:
-                        wandb.log({
-                            "sample/mean": samp_mean,
-                            "sample/std": samp_std,
-                            "sample/min": samp_min,
-                            "sample/max": samp_max,
-                        }, step=global_step)
-                model.train()
+                cond_small = state[:8]
+                eval_model = ema_model if ema_model is not None else model
+                samp = sample_sanity_check(
+                    model=eval_model,
+                    scheduler=scheduler,
+                    cond=cond_small,
+                    horizon=args.horizon,
+                    traj_dim=traj_dim,
+                    state_dim=state_dim,
+                    num_inference_steps=args.num_inference_steps,
+                )
+                samp_mean = samp.mean().item()
+                samp_std = samp.std().item()
+                samp_min = samp.min().item()
+                samp_max = samp.max().item()
+                print(f"[sample] shape={tuple(samp.shape)} mean={samp_mean:.4f} std={samp_std:.4f}")
+                
+                if args.use_wandb:
+                    wandb.log({
+                        "sample/mean": samp_mean,
+                        "sample/std": samp_std,
+                        "sample/min": samp_min,
+                        "sample/max": samp_max,
+                    }, step=global_step)
 
             # Checkpoint
-            if global_step % args.save_every_steps == 0:
+            if args.save_every_steps > 0 and (global_step % args.save_every_steps == 0):
                 ckpt_path = os.path.join(args.out_dir, f"ckpt_step_{global_step}.pt")
-                save_checkpoint(ckpt_path, model, optimizer, global_step, args)
+                ema_state = ema_model.state_dict() if ema_model is not None else None
+                save_checkpoint(ckpt_path, model, optimizer, global_step, args, ema_state=ema_state)
                 print(f"[ckpt] saved: {ckpt_path}")
                 
                 if args.use_wandb:
                     wandb.save(ckpt_path, base_path=os.path.dirname(ckpt_path))
 
-        # End of epoch checkpoint
-        ckpt_path = os.path.join(args.out_dir, f"ckpt_epoch_{epoch:03d}_step_{global_step}.pt")
-        save_checkpoint(ckpt_path, model, optimizer, global_step, args)
-        print(f"[ckpt] saved: {ckpt_path}")
+            if args.max_steps and global_step >= args.max_steps:
+                stop_training = True
+                print(f"[stop] Reached max_steps={args.max_steps}, stopping training.")
+                break
+
+        if stop_training:
+            break
+
+        val_loss = None
+        if val_loader is not None and (epoch + 1) % args.eval_every_epochs == 0:
+            model_was_training = model.training
+            model.eval()
+            val_losses = []
+            with torch.no_grad():
+                for val_batch in val_loader:
+                    val_state = val_batch["state"].to(device)
+                    val_x0 = val_batch["traj_window"].to(device)
+                    val_x0[..., state_dim:] = val_x0[..., state_dim:].clamp(-1.0, 1.0)
+
+                    B_val = val_x0.shape[0]
+                    t_val = torch.randint(
+                        low=0,
+                        high=scheduler.config.num_train_timesteps,
+                        size=(B_val,),
+                        device=device,
+                        dtype=torch.long,
+                    )
+                    val_noise = torch.randn_like(val_x0)
+                    val_x_t = scheduler.add_noise(val_x0, val_noise, t_val)
+
+                    val_out = model(sample=val_x_t, timestep=t_val, cond=val_state, return_dict=True)
+                    val_eps_hat = val_out.sample if hasattr(val_out, "sample") else val_out[0]
+                    val_loss_batch = F.mse_loss(val_eps_hat, val_noise)
+                    val_losses.append(val_loss_batch.item())
+
+            model.train(model_was_training)
+
+            val_loss = float(np.mean(val_losses)) if len(val_losses) > 0 else float("inf")
+            scheduler_lr.step(val_loss)
+
+            if args.use_wandb:
+                wandb.log({
+                    "val/loss": val_loss,
+                    "val/epoch": epoch,
+                    "train/step": global_step,
+                    "train/lr": optimizer.param_groups[0]["lr"],
+                }, step=global_step)
+
+            improved = val_loss < (best_val_loss - args.min_delta)
+            if improved:
+                best_val_loss = val_loss
+                epochs_since_improve = 0
+                model_to_save = ema_model if ema_model is not None else model
+                ema_state = ema_model.state_dict() if ema_model is not None else None
+                best_path = os.path.join(args.out_dir, "best.pt")
+                save_checkpoint(best_path, model_to_save, optimizer, global_step, args, ema_state=ema_state)
+                print(f"[best] epoch={epoch:03d} step={global_step} val_loss={val_loss:.6f} saved={best_path}")
+            else:
+                epochs_since_improve += 1
+                if epochs_since_improve >= args.patience:
+                    print(f"[early stop] no val improvement for {epochs_since_improve} evals (patience={args.patience}).")
+                    stop_training = True
+
+        if stop_training:
+            break
+
+        # End of epoch checkpoint (only every N epochs)
+        if (epoch + 1) % args.save_every_epochs == 0:
+            ckpt_path = os.path.join(args.out_dir, f"ckpt_epoch_{epoch:03d}_step_{global_step}.pt")
+            ema_state = ema_model.state_dict() if ema_model is not None else None
+            save_checkpoint(ckpt_path, model, optimizer, global_step, args, ema_state=ema_state)
+            print(f"[ckpt] saved: {ckpt_path}")
+            
+            if args.use_wandb:
+                wandb.save(ckpt_path, base_path=os.path.dirname(ckpt_path))
         
-        # Visualize trajectories
-        if args.visualize_trajectories > 0:
+        # Visualize trajectories (only every N epochs)
+        if args.visualize_trajectories > 0 and (epoch + 1) % args.save_every_epochs == 0:
+            eval_model = ema_model if ema_model is not None else model
             visualize_trajectories(
-                model=model,
+                model=eval_model,
                 scheduler=scheduler,
                 dataset_id=args.dataset_id,
                 horizon=args.horizon,
@@ -561,18 +733,21 @@ def main():
                 out_dir=args.out_dir,
                 device=device,
             )
-        
-        if args.use_wandb:
-            wandb.log({"train/epoch_completed": epoch + 1}, step=global_step)
-            wandb.save(ckpt_path, base_path=os.path.dirname(ckpt_path))
-            # Log trajectory visualization if available
-            if args.visualize_trajectories > 0:
+            
+            if args.use_wandb:
                 viz_path = os.path.join(args.out_dir, 'trajectory_viz', f'epoch_{epoch:03d}.png')
                 if os.path.exists(viz_path):
                     wandb.log({"trajectories": wandb.Image(viz_path)}, step=global_step)
+        
+        if args.use_wandb:
+            payload = {"train/epoch_completed": epoch + 1}
+            if val_loss is not None:
+                payload["val/loss_epoch_end"] = val_loss
+            wandb.log(payload, step=global_step)
 
     final_path = os.path.join(args.out_dir, f"final_step_{global_step}.pt")
-    save_checkpoint(final_path, model, optimizer, global_step, args)
+    ema_state = ema_model.state_dict() if ema_model is not None else None
+    save_checkpoint(final_path, model, optimizer, global_step, args, ema_state=ema_state)
     print(f"[done] saved final: {final_path}")
     
     if args.use_wandb:
