@@ -9,7 +9,7 @@ import torch
 import minari
 import gymnasium as gym
 
-from config import ENV_ID, DATASET_ID, SEED, DEVICE, DT, HORIZON
+from config import ENV_ID, DATASET_ID, SEED, DEVICE, DT, HORIZON, DIFFUSION_HORIZON, GUIDANCE_GAMMA
 from env_utils import parse_obs, MazeHandler
 from mppi_controller import MPPIController
 from grid_viz import GridVideoWriter, GridVideoConfig
@@ -100,7 +100,7 @@ def run_eval(args):
 
         diff_model = build_denoiser(
             arch=args.diff_arch,
-            horizon=HORIZON,
+            horizon=DIFFUSION_HORIZON,
             traj_dim=traj_dim,
             cond_dim=cond_dim,
             state_dim=state_dim,
@@ -194,10 +194,10 @@ def run_eval(args):
                     num_inference_steps=args.diff_num_inference_steps,
                     device=DEVICE,
                     return_numpy=True,
-                )  # (HORIZON, traj_dim), numpy where traj_dim = state_dim + action_dim
+                )  # (DIFFUSION_HORIZON, traj_dim), numpy where traj_dim = state_dim + action_dim
                 
                 # Extract actions from trajectory (last action_dim dimensions)
-                u_traj = traj[:, state_dim:]  # (HORIZON, action_dim)
+                u_traj = traj[:, state_dim:]  # (DIFFUSION_HORIZON, action_dim)
 
                 action = u_traj[0]  # first action of the sampled plan (receding horizon) 
 
@@ -389,10 +389,10 @@ if __name__ == "__main__":
     parser.add_argument("--diff_arch", type=str, default="mlp", choices=["mlp", "cnn", "transformer"])
     parser.add_argument("--diff_ckpt", type=str, default=None, help="Path to diffusion checkpoint (.pt)")
     parser.add_argument("--diff_num_train_timesteps", type=int, default=100)
-    parser.add_argument("--diff_num_inference_steps", type=int, default=50)
+    parser.add_argument("--diff_num_inference_steps", type=int, default=100)
     parser.add_argument("--diff_beta_start", type=float, default=1e-4)
     parser.add_argument("--diff_beta_end", type=float, default=2e-2)
-    parser.add_argument("--diff_beta_schedule", type=str, default="linear", choices=["linear", "scaled_linear", "squaredcos_cap_v2"])
+    parser.add_argument("--diff_beta_schedule", type=str, default="squaredcos_cap_v2", choices=["linear", "scaled_linear", "squaredcos_cap_v2"])
 
     args = parser.parse_args()
     

@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Optional, Union
 import numpy as np
 import torch
-from config import HORIZON, DEVICE
+from config import DIFFUSION_HORIZON, DEVICE
 
 # Optional guided-sampling knobs (fallbacks if not defined in config.py)
 try:
@@ -42,11 +42,11 @@ def sample_state_action_trajectory(
     model,
     scheduler,
     cond: Union[np.ndarray, torch.Tensor],  # (C,) or (B,C) - should be NORMALIZED if model trained on normalized
-    num_inference_steps: int = 25,
+    num_inference_steps: int = 100,
     state_mean: np.ndarray = None,  # For de-normalizing output
     state_std: np.ndarray = None,   # For de-normalizing output
     # --- Guided diffusion knobs (override config defaults) ---
-    guidance_scale: Optional[float] = 0.3,
+    guidance_scale: Optional[float] = None,
     gamma: Optional[float] = None,
     sigma: Optional[float] = None,
     hold_L: Optional[int] = None,
@@ -73,6 +73,7 @@ def sample_state_action_trajectory(
     B = cond_t.shape[0]
     traj_dim = _get_dim(model, "traj_dim")
     state_dim = _get_dim(model, "state_dim")
+    diffusion_horizon = DIFFUSION_HORIZON
     
     # Resolve guidance knobs (defaults from config.py)
     guidance_scale = float(GUIDANCE_SCALE if guidance_scale is None else guidance_scale)
@@ -95,7 +96,7 @@ def sample_state_action_trajectory(
         )
     
     # Denoise from noise
-    x = torch.randn((B, HORIZON, traj_dim), device=device)
+    x = torch.randn((B, diffusion_horizon, traj_dim), device=device)
     scheduler.set_timesteps(num_inference_steps, device=device)
     model.eval()
     
@@ -121,12 +122,12 @@ def sample_state_action_trajectory(
             r = torch.exp(-dist2 / (2.0 * (sigma ** 2) + 1e-12))  # (B, H)
 
             # Discounted early-reaching reward
-            w = (gamma ** torch.arange(HORIZON, device=device, dtype=torch.float32)).unsqueeze(0)  # (1, H)
+            w = (gamma ** torch.arange(diffusion_horizon, device=device, dtype=torch.float32)).unsqueeze(0)  # (1, H)
             J = (w * r).sum(dim=1)  # (B,)
 
             # Optional hold reward on last L steps
             if hold_L > 0 and lambda_hold > 0.0:
-                J = J + lambda_hold * r[:, HORIZON - hold_L : HORIZON].sum(dim=1)
+                J = J + lambda_hold * r[:, diffusion_horizon - hold_L : diffusion_horizon].sum(dim=1)
 
             # Optional action smoothness penalty (subtract)
             if lambda_smooth > 0.0:

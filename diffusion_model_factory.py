@@ -23,7 +23,7 @@ def build_denoiser(
     action_dim: Optional[int] = None,
     # common hyperparams (ignored by models that don't use them)
     hidden_dim: int = 1024,
-    depth: int = 4,
+    depth: int = 6,
     time_emb_dim: int = 128,
     dropout: float = 0.0,
     # optional override if you want exact control

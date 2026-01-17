@@ -19,6 +19,9 @@ K_CONTROL = 10.0
 HORIZON = 30    
 NUM_SAMPLES = 20
 
+# Diffusion (planning horizon)
+DIFFUSION_HORIZON = 100
+
 NOISE_SIGMA = 1.0 # Increased noise to explore "force" space better
 
 LAMBDA = 0.01    # Temperature param for MPPI
@@ -43,3 +46,13 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 # Reproducibility
 SEED = 42
+
+# Guided diffusion defaults (planning)
+GUIDANCE_SCALE = 0.1
+GUIDANCE_GAMMA = 0.997
+
+# Diffusion training defaults (paper-aligned)
+DIFFUSION_LR = 4e-5
+DIFFUSION_BATCH_SIZE = 32
+DIFFUSION_TRAIN_STEPS = 500_000
+DIFFUSION_NUM_TRAIN_TIMESTEPS = 100

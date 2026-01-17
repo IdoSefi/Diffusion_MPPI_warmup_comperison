@@ -46,7 +46,16 @@ from matplotlib.colors import LinearSegmentedColormap
 import minari
 
 # --- project imports (your repo) ---
-from config import DATASET_ID, HORIZON, DEVICE, SEED
+from config import (
+    DATASET_ID,
+    DIFFUSION_HORIZON,
+    DEVICE,
+    SEED,
+    DIFFUSION_LR,
+    DIFFUSION_BATCH_SIZE,
+    DIFFUSION_TRAIN_STEPS,
+    DIFFUSION_NUM_TRAIN_TIMESTEPS,
+)
 from minari_dataset import MinariDiffusionDataset
 from dynamics import AnalyticDoubleIntegrator
 from env_utils import MazeHandler
@@ -339,16 +348,16 @@ def main():
 
     # Data / project defaults
     parser.add_argument("--dataset_id", type=str, default=DATASET_ID)
-    parser.add_argument("--horizon", type=int, default=HORIZON)
+    parser.add_argument("--horizon", type=int, default=DIFFUSION_HORIZON)
     parser.add_argument("--device", type=str, default=DEVICE)
     parser.add_argument("--seed", type=int, default=SEED)
 
     # Training
     parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--max_steps", type=int, default=0, help="Stop after this many steps (0 disables)")
-    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--max_steps", type=int, default=DIFFUSION_TRAIN_STEPS, help="Stop after this many steps (0 disables)")
+    parser.add_argument("--batch_size", type=int, default=DIFFUSION_BATCH_SIZE)
     parser.add_argument("--num_workers", type=int, default=0)
-    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--lr", type=float, default=DIFFUSION_LR)
     parser.add_argument("--weight_decay", type=float, default=0.0)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--amp", action="store_true", help="Use mixed precision (CUDA only).")
@@ -359,7 +368,7 @@ def main():
     parser.add_argument("--ema_decay", type=float, default=0.9999, help="EMA decay (0 disables)")
 
     # Diffusion scheduler (training)
-    parser.add_argument("--num_diffusion_steps", type=int, default=100)
+    parser.add_argument("--num_diffusion_steps", type=int, default=DIFFUSION_NUM_TRAIN_TIMESTEPS)
     parser.add_argument("--beta_start", type=float, default=1e-4)
     parser.add_argument("--beta_end", type=float, default=2e-2)
 
@@ -367,7 +376,7 @@ def main():
     parser.add_argument("--model_module", type=str, default="diffusion_mlp_arch")
     parser.add_argument("--model_class", type=str, default="TrajectoryMLPDenoiser")
     parser.add_argument("--hidden_dim", type=int, default=1024)
-    parser.add_argument("--depth", type=int, default=4)
+    parser.add_argument("--depth", type=int, default=6)
     parser.add_argument("--time_emb_dim", type=int, default=128)
     parser.add_argument("--dropout", type=float, default=0.0)
 
@@ -387,7 +396,7 @@ def main():
 
     # Optional sampling sanity-check
     parser.add_argument("--sample_every_steps", type=int, default=0, help="0 disables. e.g., 1000")
-    parser.add_argument("--num_inference_steps", type=int, default=50)
+    parser.add_argument("--num_inference_steps", type=int, default=DIFFUSION_NUM_TRAIN_TIMESTEPS)
     
     # Trajectory visualization
     parser.add_argument("--visualize_trajectories", type=int, default=0, help="Number of trajectories to visualize per epoch (0 disables)")
@@ -474,7 +483,7 @@ def main():
         num_train_timesteps=args.num_diffusion_steps,
         beta_start=args.beta_start,
         beta_end=args.beta_end,
-        beta_schedule="linear",
+        beta_schedule="squaredcos_cap_v2",
         clip_sample=False,  # we clamp actions manually when sampling
     )
 
@@ -543,6 +552,7 @@ def main():
     t0 = time.time()
     best_val_loss = float("inf")
     epochs_since_improve = 0
+    peak_number = 1
     stop_training = False
 
     for epoch in range(args.epochs):
@@ -691,18 +701,17 @@ def main():
 
             improved = val_loss < (best_val_loss - args.min_delta)
             if improved:
+                if epochs_since_improve > 0:
+                    peak_number += 1
                 best_val_loss = val_loss
                 epochs_since_improve = 0
                 model_to_save = ema_model if ema_model is not None else model
                 ema_state = ema_model.state_dict() if ema_model is not None else None
-                best_path = os.path.join(args.out_dir, "best.pt")
+                best_path = os.path.join(args.out_dir, f"val_best_{peak_number}.pt")
                 save_checkpoint(best_path, model_to_save, optimizer, global_step, args, ema_state=ema_state)
-                print(f"[best] epoch={epoch:03d} step={global_step} val_loss={val_loss:.6f} saved={best_path}")
+                print(f"[best peak {peak_number}] epoch={epoch:03d} step={global_step} val_loss={val_loss:.6f} saved={best_path}")
             else:
                 epochs_since_improve += 1
-                if epochs_since_improve >= args.patience:
-                    print(f"[early stop] no val improvement for {epochs_since_improve} evals (patience={args.patience}).")
-                    stop_training = True
 
         if stop_training:
             break
