@@ -89,8 +89,9 @@ def run_eval(args):
     controller = MPPIController(maze_handler=maze_handler, device=DEVICE, plan_iteration=args.plan_iteration)
 
     #diffusion model initialization
-    if args.use_diffusion_policy: #TODO make this argument be condition on plan_method
-        assert args.diff_ckpt is not None, "--diff_ckpt is required when --use_diffusion_policy is set"
+    need_diffusion = args.use_diffusion_policy or args.plan_method in ["diffusion_only", "mppi_warmstart_by_diffusion"]
+    if need_diffusion:
+        assert args.diff_ckpt is not None, "--diff_ckpt is required for diffusion-based planning"
 
         action_dim = int(np.prod(env.action_space.shape))
         state_dim = 6  # parse_obs gives [x, y, vx, vy, gx, gy]
@@ -170,8 +171,11 @@ def run_eval(args):
         step = 0
         success = False
         collision_count = 0
+        mppi_refinement_count = 0
+        plan_count = 0
         
         ep_start_time = time.time()
+        action_buffer = []
         
         while not done:
             if args.render and not args.save_video and hasattr(env, 'render'):
@@ -183,22 +187,54 @@ def run_eval(args):
             # Plan
             t0 = time.time()
             if args.plan_method == "diffusion_only":
-                with torch.no_grad():
+                traj = sample_state_action_trajectory(
+                    model=diff_model,
+                    scheduler=diff_sched,
+                    cond=state_np,  # numpy (6,)
+                    num_inference_steps=args.diff_num_inference_steps,
+                    device=DEVICE,
+                    return_numpy=True,
+                )  # (HORIZON, traj_dim), numpy where traj_dim = state_dim + action_dim
+                
+                # Extract actions from trajectory (last action_dim dimensions)
+                u_traj = traj[:, state_dim:]  # (HORIZON, action_dim)
+
+                action = u_traj[0]  # first action of the sampled plan (receding horizon) 
+
+            elif args.plan_method == "mppi_only":
+                action = controller.get_action(state_np)
+
+            elif args.plan_method == "mppi_warmstart_by_diffusion":
+                if not action_buffer:
+                    plan_count += 1
+                    plan_start = time.time()
                     traj = sample_state_action_trajectory(
                         model=diff_model,
                         scheduler=diff_sched,
-                        cond=state_np,  # numpy (6,)
+                        cond=state_np,
                         num_inference_steps=args.diff_num_inference_steps,
                         device=DEVICE,
                         return_numpy=True,
-                    )  # (HORIZON, traj_dim), numpy where traj_dim = state_dim + action_dim
-                    
-                    # Extract actions from trajectory (last action_dim dimensions)
-                    u_traj = traj[:, state_dim:]  # (HORIZON, action_dim)
+                    )
+                    u_traj = traj[:, state_dim:]
+                    u_tensor = torch.tensor(u_traj, device=DEVICE, dtype=torch.float32)
+                    if u_tensor.shape[0] < HORIZON:
+                        u_tensor = torch.cat([u_tensor, u_tensor[-1:].repeat(HORIZON - u_tensor.shape[0], 1)], dim=0)
+                    controller.mppi.U = u_tensor[:HORIZON]
+                    state_t = torch.tensor(state_np, dtype=torch.float32, device=DEVICE)
+                    action_t = controller.mppi.command(state_t)
+                    end_time = plan_start + args.warmstart_time_limit
+                    refinement_iters = 0
+                    while time.time() < end_time:
+                        action_t = controller.mppi.command(state_t, shift_nominal_trajectory=False)
+                        refinement_iters += 1
+                    mppi_refinement_count += refinement_iters
+                    plan_actions = torch.cat([action_t.unsqueeze(0), controller.mppi.U[:-1]], dim=0)
+                    controller.mppi._last_plan_actions = plan_actions
+                    n = max(1, args.apply_first_n_actions)
+                    action_buffer = [a.cpu().numpy() for a in plan_actions[:n]]
+                action = action_buffer.pop(0)
 
-                action = u_traj[0]  # first action of the sampled plan (receding horizon) 
-            elif args.plan_method == "mppi_only":
-                action = controller.get_action(state_np)
             else:
                 raise ValueError(f"Unknown plan_method: {args.plan_method}")
             t1 = time.time()
@@ -294,7 +330,8 @@ def run_eval(args):
                     #print("  (Manual success triggered)")
                     break
             
-        print(f"Episode {ep+1}: Steps={step}, Success={success}, Mean Latency={np.mean(latencies[-step:]):.1f}ms")
+        mean_mppi_refine_per_plan = mppi_refinement_count / plan_count if plan_count > 0 else 0.0
+        print(f"Episode {ep+1}: Steps={step}, Success={success}, Mean Latency={np.mean(latencies[-step:]):.1f}ms, MPPI Refinements={mppi_refinement_count}, Plans={plan_count}, Mean Refine/Plan={mean_mppi_refine_per_plan:.1f}")
         
         results["episodes"].append({
             "episode": ep,
@@ -304,7 +341,10 @@ def run_eval(args):
             "total_env_time_our_simple_sec": step * DT,
             "success": bool(success),
             "latency_mean": float(np.mean(latencies[-step:])),
-            "collisions": collision_count
+            "collisions": collision_count,
+            "mppi_refinement_steps": mppi_refinement_count,
+            "plan_count": plan_count,
+            "mean_mppi_refinement_per_plan": float(mppi_refinement_count / plan_count) if plan_count > 0 else 0.0
         })
         
         if success:
@@ -340,13 +380,15 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--plan_iteration", type=int, default=1)
     parser.add_argument("--logs_dir", type=str, default="logs", help="Directory to save logs and videos")
-    parser.add_argument("--plan_method", type=str, default="diffusion_only", help="Planning method: diffusion_only or mppi_only")
+    parser.add_argument("--plan_method", type=str, default="diffusion_only", help="Planning method: diffusion_only, mppi_only, or mppi_warmstart_by_diffusion")
+    parser.add_argument("--apply_first_n_actions", type=int, default=1, help="Number of planned actions to execute before replanning (warmstart mode)")
+    parser.add_argument("--warmstart_time_limit", type=float, default=1.0, help="Seconds allocated to diffusion+MPPI planning in warmstart mode")
 
     ##diffusion:
     parser.add_argument("--use_diffusion_policy", action="store_true", help="If set, action comes from diffusion (first action of sampled trajectory)")
     parser.add_argument("--diff_arch", type=str, default="mlp", choices=["mlp", "cnn", "transformer"])
     parser.add_argument("--diff_ckpt", type=str, default=None, help="Path to diffusion checkpoint (.pt)")
-    parser.add_argument("--diff_num_train_timesteps", type=int, default=1000)
+    parser.add_argument("--diff_num_train_timesteps", type=int, default=100)
     parser.add_argument("--diff_num_inference_steps", type=int, default=50)
     parser.add_argument("--diff_beta_start", type=float, default=1e-4)
     parser.add_argument("--diff_beta_end", type=float, default=2e-2)
