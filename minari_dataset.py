@@ -16,7 +16,7 @@ class MinariDiffusionDataset(Dataset):
         self.horizon = horizon_T
         
         # 1. Load the Minari Dataset
-        self.minari_dataset = minari.load_dataset(dataset_id)
+        self.minari_dataset = minari.load_dataset(dataset_id, download=True)
         
         # 2. Build an index of valid windows
         # We need a list of tuples: (episode_index, start_timestep)
@@ -67,13 +67,15 @@ class MinariDiffusionDataset(Dataset):
         # 1. Get the conditioning state at time t (current state)
         state_at_t = data['state'][start_t]
         
-        # 2. Get the Horizon of T actions
-        action_window = data['actions'][start_t : end_t]
+        # 2. Get the Horizon of T states and actions
+        state_window = data['state'][start_t:end_t]            # (H, state_dim)
+        action_window = data['actions'][start_t:end_t]         # (H, action_dim)
+        traj_window = np.concatenate([state_window, action_window], axis=-1)  # (H, traj_dim)
         
         # Convert to Torch Tensors
         return {
-            'state': torch.from_numpy(state_at_t).float(),
-            'action_window': torch.from_numpy(action_window).float()  # Shape: (T, action_dim)
+            'state': torch.from_numpy(state_at_t).float(),          # (state_dim,)
+            'traj_window': torch.from_numpy(traj_window).float(),   # (H, traj_dim)
         }
 
 
@@ -92,4 +94,4 @@ if __name__ == "__main__":
     # Test a batch
     batch = next(iter(dataloader))
     print(f"State Batch Shape: {batch['state'].shape}")           # (256, 6) -> 4 obs + 2 goal
-    print(f"Action Window Shape: {batch['action_window'].shape}") # (256, 16, 2) -> 16 steps, 2 dims
+    print(f"Traj Window Shape: {batch['traj_window'].shape}")     # (256, H, 8) -> H steps, 6 state + 2 action

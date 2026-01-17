@@ -56,32 +56,38 @@ class SinusoidalPosEmb(nn.Module):
 
 class TrajectoryMLPDenoiser(ModelMixin, ConfigMixin):
     """
-    Conditional MLP epsilon-model for trajectories.
+    Conditional MLP epsilon-model for state-action trajectories.
 
     Inputs:
-      sample:   x_t noisy action window      (B, H, A)
+      sample:   x_t noisy trajectory window  (B, H, traj_dim) where traj_dim = state_dim + action_dim
       timestep: diffusion step index t       (B,) or scalar
       cond:     conditioning state/features  (B, C)
 
     Output:
-      eps_hat: predicted noise               (B, H, A)  (returned as `.sample`)
+      eps_hat: predicted noise               (B, H, traj_dim)  (returned as `.sample`)
     """
 
     @register_to_config
     def __init__(
         self,
         horizon: int,
-        action_dim: int,
+        traj_dim: int,
         cond_dim: int,
         hidden_dim: int = 1024,
         depth: int = 4,
         time_emb_dim: int = 128,
         dropout: float = 0.0,
+        state_dim: int = None,
+        action_dim: int = None,
     ):
         super().__init__()
         self.horizon = int(horizon)
-        self.action_dim = int(action_dim)
+        self.traj_dim = int(traj_dim)
         self.cond_dim = int(cond_dim)
+        
+        # Optional metadata (recommended for sampling/clamping)
+        self.state_dim = int(state_dim) if state_dim is not None else None
+        self.action_dim = int(action_dim) if action_dim is not None else None
 
         # Map timestep -> embedding. (This embedding is concatenated to inputs.)
         self.time_mlp = nn.Sequential(
@@ -90,9 +96,9 @@ class TrajectoryMLPDenoiser(ModelMixin, ConfigMixin):
             nn.SiLU(),
         )
 
-        # We flatten the whole action window, so an MLP can process it.
+        # We flatten the whole trajectory window, so an MLP can process it.
         # Input vector = flattened trajectory + timestep embedding + conditioning vector.
-        in_dim = self.horizon * self.action_dim + time_emb_dim + self.cond_dim
+        in_dim = self.horizon * self.traj_dim + time_emb_dim + self.cond_dim
 
         layers = []
         d = in_dim
@@ -102,24 +108,24 @@ class TrajectoryMLPDenoiser(ModelMixin, ConfigMixin):
                 layers.append(nn.Dropout(dropout))
             d = hidden_dim
 
-        # Output is flattened epsilon for the entire trajectory; we reshape back to (B,H,A).
-        layers.append(nn.Linear(d, self.horizon * self.action_dim))
+        # Output is flattened epsilon for the entire trajectory; we reshape back to (B,H,traj_dim).
+        layers.append(nn.Linear(d, self.horizon * self.traj_dim))
         self.net = nn.Sequential(*layers)
 
     def forward(
         self,
-        sample: torch.Tensor,     # x_t: (B, H, A)
+        sample: torch.Tensor,     # x_t: (B, H, traj_dim)
         timestep: torch.Tensor,   # t:   (B,) or scalar/int
         cond: torch.Tensor,       # (B, C)
         return_dict: bool = True,
     ):
         # Basic shape checks: catch silent bugs early.
         if sample.ndim != 3:
-            raise ValueError(f"sample must be (B,H,A), got {tuple(sample.shape)}")
-        B, H, A = sample.shape
-        if (H != self.horizon) or (A != self.action_dim):
+            raise ValueError(f"sample must be (B,H,traj_dim), got {tuple(sample.shape)}")
+        B, H, D = sample.shape
+        if (H != self.horizon) or (D != self.traj_dim):
             raise ValueError(
-                f"sample shape mismatch: expected (B,{self.horizon},{self.action_dim}), got {tuple(sample.shape)}"
+                f"sample shape mismatch: expected (B,{self.horizon},{self.traj_dim}), got {tuple(sample.shape)}"
             )
         if cond.ndim != 2 or cond.shape != (B, self.cond_dim):
             raise ValueError(f"cond must be (B,{self.cond_dim}), got {tuple(cond.shape)}")
@@ -131,12 +137,12 @@ class TrajectoryMLPDenoiser(ModelMixin, ConfigMixin):
             timestep = timestep.expand(B)
 
         # Flatten trajectory so the MLP can process all timesteps jointly.
-        x_flat = sample.reshape(B, -1)                 # (B, H*A)
+        x_flat = sample.reshape(B, -1)                 # (B, H*traj_dim)
         t_emb = self.time_mlp(timestep)                # (B, time_emb_dim)
-        h = torch.cat([x_flat, t_emb, cond], dim=-1)   # (B, H*A + time_emb + C)
+        h = torch.cat([x_flat, t_emb, cond], dim=-1)   # (B, H*traj_dim + time_emb + C)
 
-        eps_flat = self.net(h)                         # (B, H*A)
-        eps = eps_flat.reshape(B, self.horizon, self.action_dim)
+        eps_flat = self.net(h)                         # (B, H*traj_dim)
+        eps = eps_flat.reshape(B, self.horizon, self.traj_dim)
 
         # diffusers convention: return object with `.sample`
         if not return_dict:
@@ -146,10 +152,12 @@ class TrajectoryMLPDenoiser(ModelMixin, ConfigMixin):
 
 if __name__ == "__main__":
     # Quick sanity check for shapes (not a training example).
-    B, H, A, C = 4, 30, 2, 6
-    model = TrajectoryMLPDenoiser(horizon=H, action_dim=A, cond_dim=C)
-    x_t = torch.randn(B, H, A)
+    B, H, state_dim, action_dim, C = 4, 30, 6, 2, 6
+    traj_dim = state_dim + action_dim
+    model = TrajectoryMLPDenoiser(horizon=H, traj_dim=traj_dim, cond_dim=C,
+                                  state_dim=state_dim, action_dim=action_dim)
+    x_t = torch.randn(B, H, traj_dim)
     t = torch.randint(0, 100, (B,))
     cond = torch.randn(B, C)
     out = model(sample=x_t, timestep=t, cond=cond)
-    print(out.sample.shape)  # (B, H, A)
+    print(out.sample.shape)  # (B, H, traj_dim)

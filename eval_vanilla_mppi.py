@@ -16,7 +16,7 @@ from grid_viz import GridVideoWriter, GridVideoConfig
 
 #diffusion models
 from diffusers import DDPMScheduler
-from diffusion_model_sampling import sample_action_trajectory
+from diffusion_model_sampling import sample_state_action_trajectory
 from diffusion_model_factory import build_denoiser 
 
 def run_eval(args):
@@ -93,13 +93,17 @@ def run_eval(args):
         assert args.diff_ckpt is not None, "--diff_ckpt is required when --use_diffusion_policy is set"
 
         action_dim = int(np.prod(env.action_space.shape))
-        cond_dim = 6  # parse_obs gives [x, y, vx, vy, gx, gy]
+        state_dim = 6  # parse_obs gives [x, y, vx, vy, gx, gy]
+        traj_dim = state_dim + action_dim  # trajectory includes both state and action
+        cond_dim = state_dim  # conditioning is the full state
 
         diff_model = build_denoiser(
             arch=args.diff_arch,
             horizon=HORIZON,
-            action_dim=action_dim,
+            traj_dim=traj_dim,
             cond_dim=cond_dim,
+            state_dim=state_dim,
+            action_dim=action_dim,
         ).to(DEVICE)
 
         ckpt = torch.load(args.diff_ckpt, map_location="cpu")
@@ -180,14 +184,17 @@ def run_eval(args):
             t0 = time.time()
             if args.plan_method == "diffusion_only":
                 with torch.no_grad():
-                    u_traj = sample_action_trajectory(
+                    traj = sample_state_action_trajectory(
                         model=diff_model,
                         scheduler=diff_sched,
                         cond=state_np,  # numpy (6,)
                         num_inference_steps=args.diff_num_inference_steps,
                         device=DEVICE,
                         return_numpy=True,
-                    )  # (HORIZON, action_dim), numpy 
+                    )  # (HORIZON, traj_dim), numpy where traj_dim = state_dim + action_dim
+                    
+                    # Extract actions from trajectory (last action_dim dimensions)
+                    u_traj = traj[:, state_dim:]  # (HORIZON, action_dim)
 
                 action = u_traj[0]  # first action of the sampled plan (receding horizon) 
             elif args.plan_method == "mppi_only":

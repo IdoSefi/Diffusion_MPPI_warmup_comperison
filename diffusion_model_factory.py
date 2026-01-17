@@ -17,8 +17,10 @@ def build_denoiser(
     *,
     arch: str,
     horizon: int,
-    action_dim: int,
+    traj_dim: int,
     cond_dim: int,
+    state_dim: Optional[int] = None,
+    action_dim: Optional[int] = None,
     # common hyperparams (ignored by models that don't use them)
     hidden_dim: int = 1024,
     depth: int = 4,
@@ -49,8 +51,10 @@ def build_denoiser(
 
     kwargs: Dict[str, Any] = dict(
         horizon=horizon,
-        action_dim=action_dim,
+        traj_dim=traj_dim,
         cond_dim=cond_dim,
+        state_dim=state_dim,
+        action_dim=action_dim,
         hidden_dim=hidden_dim,
         depth=depth,
         time_emb_dim=time_emb_dim,

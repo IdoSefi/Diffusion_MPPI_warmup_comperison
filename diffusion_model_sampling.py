@@ -1,101 +1,67 @@
-# diffusion_sampling_simple.py
+# diffusion_model_sampling.py
+"""Simple diffusion sampling for (state, action) trajectories."""
 from __future__ import annotations
-
 from typing import Optional, Union
 import numpy as np
 import torch
-
-from config import HORIZON, DEVICE  # uses your project config :contentReference[oaicite:1]{index=1}
-
-
-def _get_action_dim(model) -> int:
-    # Prefer diffusers ConfigMixin
-    if hasattr(model, "config") and hasattr(model.config, "action_dim"):
-        return int(model.config.action_dim)
-    # Fallback: plain attribute
-    if hasattr(model, "action_dim"):
-        return int(model.action_dim)
-    raise ValueError(
-        "Cannot determine action_dim. Ensure your model has `model.config.action_dim` "
-        "or `model.action_dim`."
-    )
+from config import HORIZON, DEVICE
 
 
-def _get_eps_hat(model_out) -> torch.Tensor:
-    # diffusers BaseOutput style
-    if hasattr(model_out, "sample"):
-        return model_out.sample
-    # raw tensor
-    if isinstance(model_out, torch.Tensor):
-        return model_out
-    # tuple/list
-    if isinstance(model_out, (tuple, list)) and len(model_out) > 0 and isinstance(model_out[0], torch.Tensor):
-        return model_out[0]
-    raise TypeError(f"Unrecognized model output type: {type(model_out)}")
+def _get_dim(model, name):
+    """Get dimension from model config or attribute."""
+    if hasattr(model, "config") and hasattr(model.config, name):
+        return int(getattr(model.config, name))
+    if hasattr(model, name):
+        return int(getattr(model, name))
+    raise ValueError(f"Cannot determine {name} from model")
 
 
 @torch.no_grad()
-def sample_action_trajectory(
-    *,
+def sample_state_action_trajectory(
     model,
     scheduler,
-    cond: Union[np.ndarray, torch.Tensor],     # (C,) or (B,C)
+    cond: Union[np.ndarray, torch.Tensor],  # (C,) or (B,C) - should be NORMALIZED if model trained on normalized
     num_inference_steps: int = 25,
-    action_low: float = -1.0,
-    action_high: float = 1.0,
+    state_mean: np.ndarray = None,  # For de-normalizing output
+    state_std: np.ndarray = None,   # For de-normalizing output
+    device: Optional[str] = None,
     return_numpy: bool = True,
-    generator: Optional[torch.Generator] = None,
-    device: Optional[Union[str, torch.device]] = None,
 ):
     """
-    Sample ONE action trajectory using diffusers scheduler, for your fixed HORIZON.
-
-    Inputs:
-      cond: (C,) single state OR (B,C) batch of states
-
-    Output:
-      if cond is (C,):    (HORIZON, action_dim)
-      if cond is (B,C):   (B, HORIZON, action_dim)
+    Sample (state, action) trajectories with first-state inpainting.
+    
+    - cond: normalized conditioning state (as the model expects)
+    - Returns: de-normalized trajectory if state_mean/std provided, else normalized
     """
-    if device is None:
-        device = torch.device(DEVICE)
-    else:
-        device = torch.device(device)
-
-    # cond -> torch (B,C)
-    if isinstance(cond, torch.Tensor):
-        cond_t = cond.to(device=device, dtype=torch.float32)
-    else:
-        cond_t = torch.as_tensor(cond, device=device, dtype=torch.float32)
-
+    device = torch.device(device or DEVICE)
+    cond_t = torch.as_tensor(cond, device=device, dtype=torch.float32)
     if cond_t.ndim == 1:
-        cond_t = cond_t.unsqueeze(0)  # (1,C)
-    if cond_t.ndim != 2:
-        raise ValueError(f"cond must be (C,) or (B,C), got {tuple(cond_t.shape)}")
-
+        cond_t = cond_t.unsqueeze(0)
+    
     B = cond_t.shape[0]
-    action_dim = _get_action_dim(model)
-
-    # initial noise
-    x = torch.randn((B, HORIZON, action_dim), device=device, generator=generator)
-
-    # denoise
+    traj_dim = _get_dim(model, "traj_dim")
+    state_dim = _get_dim(model, "state_dim")
+    
+    # Denoise from noise
+    x = torch.randn((B, HORIZON, traj_dim), device=device)
     scheduler.set_timesteps(num_inference_steps, device=device)
     model.eval()
-
+    
     for t in scheduler.timesteps:
-        t_batch = t.expand(B).long()
-        out = model(sample=x, timestep=t_batch, cond=cond_t, return_dict=True)
-        eps_hat = _get_eps_hat(out)
-
-        step_out = scheduler.step(eps_hat, t, x, generator=generator)
-        x = step_out.prev_sample
-
-    x = x.clamp(action_low, action_high)
-
+        x[:, 0, :state_dim] = cond_t[:, :state_dim]  # Inpaint first state
+        out = model(sample=x, timestep=t.expand(B).long(), cond=cond_t, return_dict=True)
+        eps = out.sample if hasattr(out, "sample") else out[0]
+        x = scheduler.step(eps, t, x).prev_sample
+    
+    x[:, 0, :state_dim] = cond_t[:, :state_dim]  # Final inpaint
+    x[..., state_dim:] = x[..., state_dim:].clamp(-1.0, 1.0)  # Clamp actions
+    
+    # De-normalize states if stats provided
+    if state_mean is not None and state_std is not None:
+        mean = torch.as_tensor(state_mean, device=device, dtype=torch.float32)
+        std = torch.as_tensor(state_std, device=device, dtype=torch.float32)
+        x[..., :state_dim] = x[..., :state_dim] * std + mean
+    
     if B == 1:
-        x = x.squeeze(0)  # (H, A)
-
-    if return_numpy:
-        return x.detach().cpu().numpy()
-    return x
+        x = x.squeeze(0)
+    return x.cpu().numpy() if return_numpy else x

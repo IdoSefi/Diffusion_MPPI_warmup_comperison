@@ -2,18 +2,18 @@
 """
 train_diffusion.py
 
-Generic trainer for conditional diffusion over action trajectories using Hugging Face diffusers.
+Generic trainer for conditional diffusion over state-action trajectories using Hugging Face diffusers.
 
 Project integration:
 - imports DATASET_ID, HORIZON, DEVICE, SEED from config.py
-- uses MinariDiffusionDataset from minari_dataset.py (returns dict with keys: 'state', 'action_window')
+- uses MinariDiffusionDataset from minari_dataset.py (returns dict with keys: 'state', 'traj_window')
 
 Model contract (architecture-only):
 - forward(sample=x_t, timestep=t, cond=state, return_dict=True) -> output with `.sample` = eps_hat
   where:
-    x_t:    (B, H, action_dim)
+    x_t:    (B, H, traj_dim)  where traj_dim = state_dim + action_dim
     t:      (B,) int64 timesteps
-    state:  (B, cond_dim)
+    state:  (B, state_dim)
 
 Default model (MLP) expected at:
   diffusion_mlp_arch.py : class TrajectoryMLPDenoiser
@@ -84,18 +84,25 @@ def dynamic_load_model(module_name: str, class_name: str, kwargs: Dict[str, Any]
     return model
 
 
-def infer_dims_from_batch(batch: Dict[str, torch.Tensor]) -> Tuple[int, int, int]:
+def infer_dims_from_batch(batch: Dict[str, torch.Tensor]) -> Tuple[int, int, int, int]:
     """
-    Returns: (cond_dim, action_dim, horizon)
+    Returns: (state_dim, action_dim, traj_dim, horizon)
     """
-    state = batch["state"]                 # (B, cond_dim)
-    action_window = batch["action_window"] # (B, H, action_dim) OR (B, H, A) depending on collate
-    if action_window.ndim != 3:
-        raise ValueError(f"Expected action_window (B,H,A), got {tuple(action_window.shape)}")
-    cond_dim = state.shape[-1]
-    horizon = action_window.shape[1]
-    action_dim = action_window.shape[2]
-    return cond_dim, action_dim, horizon
+    state = batch["state"]                 # (B, state_dim)
+    traj_window = batch["traj_window"]     # (B, H, traj_dim)
+    
+    if traj_window.ndim != 3:
+        raise ValueError(f"Expected traj_window (B,H,traj_dim), got {tuple(traj_window.shape)}")
+    
+    state_dim = state.shape[-1]
+    horizon = traj_window.shape[1]
+    traj_dim = traj_window.shape[2]
+    action_dim = traj_dim - state_dim
+    
+    if action_dim <= 0:
+        raise ValueError(f"traj_dim ({traj_dim}) must be > state_dim ({state_dim})")
+    
+    return state_dim, action_dim, traj_dim, horizon
 
 
 @torch.no_grad()
@@ -154,7 +161,8 @@ def visualize_trajectories(
     scheduler: DDPMScheduler,
     dataset_id: str,
     horizon: int,
-    action_dim: int,
+    traj_dim: int,
+    state_dim: int,
     num_inference_steps: int,
     num_trajectories: int,
     epoch: int,
@@ -211,15 +219,19 @@ def visualize_trajectories(
         # Get initial state with obs + goal concatenated (matches training format)
         initial_state = torch.from_numpy(combined_states[start_idx]).float()  # (6,)
         
-        # Sample actions from diffusion model using sample_sanity_check
-        sampled_actions = sample_sanity_check(
+        # Sample trajectory from diffusion model using sample_sanity_check
+        sampled_traj = sample_sanity_check(
             model=model,
             scheduler=scheduler,
             cond=initial_state.unsqueeze(0).to(device),
             horizon=horizon,
-            action_dim=action_dim,
+            traj_dim=traj_dim,
+            state_dim=state_dim,
             num_inference_steps=num_inference_steps,
-        )
+        )  # (1, H, traj_dim)
+        
+        # Extract actions from trajectory
+        sampled_actions = sampled_traj[0, :, state_dim:].cpu().numpy()  # (H, action_dim)
         sampled_actions = sampled_actions[0].cpu().numpy()  # (horizon, action_dim)
         
         # Rollout trajectory using dynamics (same as verify_dataset.py)
@@ -352,7 +364,7 @@ def main():
 
     # Infer dims from one batch (keeps this script architecture-agnostic)
     first_batch = next(iter(loader))
-    cond_dim, action_dim, horizon = infer_dims_from_batch(first_batch)
+    state_dim, action_dim, traj_dim, horizon = infer_dims_from_batch(first_batch)
     if horizon != args.horizon:
         print(f"[WARN] loader horizon={horizon} differs from args.horizon={args.horizon}. Using loader horizon.")
         args.horizon = horizon
@@ -360,8 +372,10 @@ def main():
     # Build model kwargs; required keys for your arch
     model_kwargs = dict(
         horizon=args.horizon,
+        traj_dim=traj_dim,
+        cond_dim=state_dim,  # cond is still batch["state"]
+        state_dim=state_dim,
         action_dim=action_dim,
-        cond_dim=cond_dim,
         hidden_dim=args.hidden_dim,
         depth=args.depth,
         time_emb_dim=args.time_emb_dim,
@@ -391,8 +405,9 @@ def main():
             wandb_config = {
                 "dataset_id": args.dataset_id,
                 "horizon": args.horizon,
-                "cond_dim": cond_dim,
+                "state_dim": state_dim,
                 "action_dim": action_dim,
+                "traj_dim": traj_dim,
                 "epochs": args.epochs,
                 "batch_size": args.batch_size,
                 "lr": args.lr,
@@ -434,11 +449,11 @@ def main():
 
     for epoch in range(args.epochs):
         for batch in loader:
-            state = batch["state"].to(device)                     # (B, cond_dim)
-            x0 = batch["action_window"].to(device)                # (B, H, action_dim)
+            state = batch["state"].to(device)          # (B, state_dim)
+            x0 = batch["traj_window"].to(device)       # (B, H, traj_dim)
 
-            # Safety: keep actions bounded (PointMaze actions are typically in [-1,1])
-            x0 = x0.clamp(-1.0, 1.0)
+            # Safety: keep actions bounded (clamp only actions, not states)
+            x0[..., state_dim:] = x0[..., state_dim:].clamp(-1.0, 1.0)
 
             B = x0.shape[0]
             t = torch.randint(
@@ -498,7 +513,8 @@ def main():
                         scheduler=scheduler,
                         cond=cond_small,
                         horizon=args.horizon,
-                        action_dim=action_dim,
+                        traj_dim=traj_dim,
+                        state_dim=state_dim,
                         num_inference_steps=args.num_inference_steps,
                     )
                     samp_mean = samp.mean().item()
@@ -537,7 +553,8 @@ def main():
                 scheduler=scheduler,
                 dataset_id=args.dataset_id,
                 horizon=args.horizon,
-                action_dim=action_dim,
+                traj_dim=traj_dim,
+                state_dim=state_dim,
                 num_inference_steps=args.num_inference_steps,
                 num_trajectories=args.visualize_trajectories,
                 epoch=epoch,
