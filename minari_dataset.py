@@ -7,26 +7,54 @@ from config import DATASET_ID, HORIZON
 
 
 class MinariDiffusionDataset(Dataset):
-    def __init__(self, dataset_id, horizon_T):
+    def __init__(self, dataset_id, horizon_T, split="train", val_ratio=0.1, seed=42):
         """
         Args:
             dataset_id (str): Minari dataset name (e.g., 'D4RL/pointmaze/large-v2')
             horizon_T (int): The prediction horizon for actions
+            split (str): "train" or "val" - which split to load
+            val_ratio (float): Ratio of episodes to use for validation (default 0.1)
+            seed (int): Random seed for deterministic episode splitting
         """
         self.horizon = horizon_T
+        self.split = split
         
         # 1. Load the Minari Dataset
         self.minari_dataset = minari.load_dataset(dataset_id, download=True)
         
-        # 2. Build an index of valid windows
+        # 2. Collect all episodes first to determine train/val split
+        print("Collecting all episodes for deterministic train/val split...")
+        all_episodes = []
+        for ep in self.minari_dataset.iterate_episodes():
+            all_episodes.append(ep)
+        
+        total_episodes = len(all_episodes)
+        
+        # 3. Shuffle episode indices deterministically
+        rng = np.random.RandomState(seed)
+        all_ep_indices = np.arange(total_episodes)
+        rng.shuffle(all_ep_indices)
+        
+        # 4. Split episodes into train and val
+        val_count = int(total_episodes * val_ratio)
+        if split == "train":
+            target_episodes = all_ep_indices[val_count:]
+        else:  # split == "val"
+            target_episodes = all_ep_indices[:val_count]
+        
+        print(f"Dataset split: {len(target_episodes)} episodes ({split})")
+        
+        # 5. Build an index of valid windows from target episodes only
         # We need a list of tuples: (episode_index, start_timestep)
         self.indices = []
         
         # We cache the data in RAM for speed (PointMaze is small enough)
         self.episode_data = []
         
-        print("Pre-loading episodes and building indices...")
-        for ep_idx, episode in enumerate(self.minari_dataset.iterate_episodes()):
+        print("Pre-loading target episodes and building indices...")
+        for local_idx, global_ep_idx in enumerate(target_episodes):
+            episode = all_episodes[global_ep_idx]
+            
             # Episode lengths
             n_steps = len(episode.actions)
             
@@ -53,7 +81,7 @@ class MinariDiffusionDataset(Dataset):
             for t in range(n_steps - self.horizon + 1):
                 self.indices.append((len(self.episode_data) - 1, t))
                 
-        print(f"Dataset ready. Found {len(self.indices)} valid windows.")
+        print(f"Dataset ready. Found {len(self.indices)} valid windows from {len(self.episode_data)} episodes.")
 
     def __len__(self):
         return len(self.indices)

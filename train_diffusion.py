@@ -408,26 +408,27 @@ def main():
     pin_memory = device.type == "cuda"
     persistent_workers = args.num_workers > 0
 
-    # Dataset split + deterministic loaders
-    dataset = MinariDiffusionDataset(args.dataset_id, horizon_T=args.horizon)
-    split_generator = torch.Generator().manual_seed(args.seed)
-    loader_generator = torch.Generator().manual_seed(args.seed)
-
-    val_len = 0
+    # Dataset split (episode-level, not window-level) + deterministic loaders
+    # MinariDiffusionDataset now handles train/val split internally to avoid data leakage
+    train_ds = MinariDiffusionDataset(
+        args.dataset_id, 
+        horizon_T=args.horizon,
+        split="train",
+        val_ratio=args.val_frac,
+        seed=args.seed
+    )
+    
+    val_ds = None
     if args.val_frac > 0:
-        val_len = max(1, int(len(dataset) * args.val_frac))
-        if val_len >= len(dataset):
-            val_len = max(len(dataset) - 1, 0)
-    train_len = len(dataset) - val_len
-    if train_len <= 0:
-        raise ValueError("Validation split too large; no training samples remain.")
-
-    if val_len > 0:
-        train_ds, val_ds = torch.utils.data.random_split(
-            dataset, [train_len, val_len], generator=split_generator
+        val_ds = MinariDiffusionDataset(
+            args.dataset_id,
+            horizon_T=args.horizon,
+            split="val",
+            val_ratio=args.val_frac,
+            seed=args.seed
         )
-    else:
-        train_ds, val_ds = dataset, None
+    
+    loader_generator = torch.Generator().manual_seed(args.seed)
 
     train_loader = DataLoader(
         train_ds,
