@@ -55,6 +55,8 @@ from config import (
     DIFFUSION_BATCH_SIZE,
     DIFFUSION_TRAIN_STEPS,
     DIFFUSION_NUM_TRAIN_TIMESTEPS,
+    NORM_MEAN,
+    NORM_STD,
 )
 from minari_dataset import MinariDiffusionDataset
 from dynamics import AnalyticDoubleIntegrator
@@ -142,7 +144,7 @@ def sample_sanity_check(
         step_out = scheduler.step(eps_hat, t, x)
         x = step_out.prev_sample
 
-    out = x.clamp(-1.0, 1.0)
+    out = x # Removed clamping for authorized space
     model.train(was_training)
     return out
 
@@ -252,28 +254,40 @@ def visualize_trajectories(
         axes = np.array([axes])
     axes = axes.flatten()
     
+    # Stats for normalization
+    norm_mean = torch.tensor(NORM_MEAN, device=device, dtype=torch.float32)
+    norm_std = torch.tensor(NORM_STD, device=device, dtype=torch.float32)
+
     # Generate and plot trajectories
     for plot_idx, start_idx in enumerate(indices):
         if plot_idx >= num_trajectories or start_idx >= len(combined_states):
             break
         
         # Get initial state with obs + goal concatenated (matches training format)
-        initial_state = torch.from_numpy(combined_states[start_idx]).float()  # (6,)
+        initial_state_raw = torch.from_numpy(combined_states[start_idx]).float().to(device)  # (6,)
+        
+        # Normalize condition
+        cond = (initial_state_raw - norm_mean[:state_dim]) / norm_std[:state_dim]
         
         # Sample trajectory from diffusion model using sample_sanity_check
         sampled_traj = sample_sanity_check(
             model=model,
             scheduler=scheduler,
-            cond=initial_state.unsqueeze(0).to(device),
+            cond=cond.unsqueeze(0),
             horizon=horizon,
             traj_dim=traj_dim,
             state_dim=state_dim,
             num_inference_steps=num_inference_steps,
-        )  # (1, H, traj_dim)
+        )
+        # De-normalize trajectory for visualization
+        sampled_traj = sampled_traj * norm_std + norm_mean
+        
+        # Back to CPU for plotting
+        initial_state = initial_state_raw.cpu()
+        sampled_traj = sampled_traj.detach().cpu()  # (1, H, traj_dim)
         
         # Extract actions from trajectory
-        sampled_actions = sampled_traj[0, :, state_dim:].cpu().numpy()  # (H, action_dim)
-        sampled_actions = sampled_actions[0].cpu().numpy()  # (horizon, action_dim)
+        sampled_actions = sampled_traj[0, :, state_dim:].numpy()  # (H, action_dim)
         
         # Rollout trajectory using dynamics (same as verify_dataset.py)
         # Note: dynamics expects full state (6-dim), using only observation part (4-dim) for position

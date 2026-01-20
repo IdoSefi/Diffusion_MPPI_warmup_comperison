@@ -139,20 +139,34 @@ def sample_state_action_trajectory(
             grad = torch.autograd.grad(J.sum(), xg, create_graph=False, retain_graph=False)[0]
             x_prev = x_prev + guidance_scale * grad
 
-        # Enforce MPC consistency + action bounds each step
+        # Enforce MPC consistency
         x_prev[:, 0, :state_dim] = cond_t[:, :state_dim]
-        x_prev[..., state_dim:] = x_prev[..., state_dim:].clamp(-1.0, 1.0)
+        # x_prev[..., state_dim:] = x_prev[..., state_dim:].clamp(-1.0, 1.0) # Removed clamp for normalized space
         x = x_prev
     
-    # Final inpaint + clamp actions
-    x[:, 0, :state_dim] = cond_t[:, :state_dim]
-    x[..., state_dim:] = x[..., state_dim:].clamp(-1.0, 1.0)
+    # Final inpaint + clamp actions (clamping in normalized space might be wrong if range is not [-1, 1])
+    # BUT current logic relies on actions being roughly in [-1, 1] for model stability, 
+    # and if normalized, they are unit Gaussian. Clamping to [-1, 1] would truncate > 1 std.
+    # We should probably remove clamp or move it after denormalization.
+    # However, MPPI requires actions in [-1, 1] usually (if env expects it).
+    # If we trained on normalized actions, the diffusion model outputs normalized actions.
+    # For now, we disable clamping for normalized output, OR we clamp after denorm.
     
-    # De-normalize states if stats provided
+    x[:, 0, :state_dim] = cond_t[:, :state_dim]
+    
+    # De-normalize if stats provided
     if state_mean is not None and state_std is not None:
         mean = torch.as_tensor(state_mean, device=device, dtype=torch.float32)
         std = torch.as_tensor(state_std, device=device, dtype=torch.float32)
-        x[..., :state_dim] = x[..., :state_dim] * std + mean
+        
+        # Check dimensionality to decide if we denorm full traj or just state
+        if mean.shape[-1] == x.shape[-1]:
+            x = x * std + mean
+        else:
+            x[..., :state_dim] = x[..., :state_dim] * std + mean
+
+    # Clamp actions after de-normalization to ensure valid env actions
+    x[..., state_dim:] = x[..., state_dim:].clamp(-1.0, 1.0)
     
     if B == 1:
         x = x.squeeze(0)

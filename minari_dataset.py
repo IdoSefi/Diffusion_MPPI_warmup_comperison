@@ -3,7 +3,7 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import csv
-from config import DATASET_ID, HORIZON
+from config import DATASET_ID, HORIZON, NORM_MEAN, NORM_STD
 
 
 class MinariDiffusionDataset(Dataset):
@@ -101,9 +101,23 @@ class MinariDiffusionDataset(Dataset):
         traj_window = np.concatenate([state_window, action_window], axis=-1)  # (H, traj_dim)
         
         # Convert to Torch Tensors
+        # Normalize
+        state_tensor = torch.from_numpy(state_at_t).float()
+        traj_tensor = torch.from_numpy(traj_window).float()
+
+        # Load normalization stats
+        norm_mean = torch.tensor(NORM_MEAN, dtype=torch.float32)
+        norm_std = torch.tensor(NORM_STD, dtype=torch.float32)
+
+        # Normalize state (cond) using first 6 dims
+        state_tensor = (state_tensor - norm_mean[:6]) / norm_std[:6]
+
+        # Normalize trajectory (state + action) using all dims
+        traj_tensor = (traj_tensor - norm_mean) / norm_std
+
         return {
-            'state': torch.from_numpy(state_at_t).float(),          # (state_dim,)
-            'traj_window': torch.from_numpy(traj_window).float(),   # (H, traj_dim)
+            'state': state_tensor,          # (state_dim,)
+            'traj_window': traj_tensor,   # (H, traj_dim)
         }
 
 

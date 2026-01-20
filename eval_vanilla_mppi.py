@@ -9,7 +9,7 @@ import torch
 import minari
 import gymnasium as gym
 
-from config import ENV_ID, DATASET_ID, SEED, DEVICE, DT, HORIZON, DIFFUSION_HORIZON, GUIDANCE_GAMMA
+from config import ENV_ID, DATASET_ID, SEED, DEVICE, DT, HORIZON, DIFFUSION_HORIZON, GUIDANCE_GAMMA, NORM_MEAN, NORM_STD
 from env_utils import parse_obs, MazeHandler
 from mppi_controller import MPPIController
 from grid_viz import GridVideoWriter, GridVideoConfig
@@ -136,6 +136,13 @@ def run_eval(args):
     print("Controller wall dist map exists:", getattr(controller.maze_handler, "wall_dist_map", None) is not None)
     print("Controller agent radius:", getattr(controller.maze_handler, "agent_radius", None))
     
+    # --- Normalization Stats ---
+    norm_mean_full = np.array(NORM_MEAN, dtype=np.float32)
+    norm_std_full = np.array(NORM_STD, dtype=np.float32)
+    cond_mean = norm_mean_full[:state_dim]
+    cond_std = norm_std_full[:state_dim]
+    # ---------------------------
+    
     success_count = 0
     total_steps = 0
     latencies = []
@@ -196,11 +203,14 @@ def run_eval(args):
             # Plan
             t0 = time.time()
             if args.plan_method == "diffusion_only":
+                cond_norm = (state_np - cond_mean) / cond_std
                 traj = sample_state_action_trajectory(
                     model=diff_model,
                     scheduler=diff_sched,
-                    cond=state_np,  # numpy (6,)
+                    cond=cond_norm,  # Normalized
                     num_inference_steps=args.diff_num_inference_steps,
+                    state_mean=norm_mean_full, # Passed for de-normalization
+                    state_std=norm_std_full,
                     device=DEVICE,
                     return_numpy=True,
                 )  # (DIFFUSION_HORIZON, traj_dim), numpy where traj_dim = state_dim + action_dim
@@ -217,11 +227,14 @@ def run_eval(args):
                 if not action_buffer:
                     plan_count += 1
                     plan_start = time.time()
+                    cond_norm = (state_np - cond_mean) / cond_std
                     traj = sample_state_action_trajectory(
                         model=diff_model,
                         scheduler=diff_sched,
-                        cond=state_np,
+                        cond=cond_norm,
                         num_inference_steps=args.diff_num_inference_steps,
+                        state_mean=norm_mean_full,
+                        state_std=norm_std_full,
                         device=DEVICE,
                         return_numpy=True,
                     )
