@@ -98,16 +98,25 @@ def run_eval(args):
         traj_dim = state_dim + action_dim  # trajectory includes both state and action
         cond_dim = state_dim  # conditioning is the full state
 
+        ckpt = torch.load(args.diff_ckpt, map_location="cpu")
+        ckpt_args = ckpt.get("args", {}) if isinstance(ckpt, dict) else {}
+        def _ckpt_arg(name, default):
+            return ckpt_args.get(name, default) if isinstance(ckpt_args, dict) else default
+        print(f"[diffusion ckpt args] hidden_dim={_ckpt_arg('hidden_dim', 1024)} depth={_ckpt_arg('depth', 6)} time_emb_dim={_ckpt_arg('time_emb_dim', 128)} dropout={_ckpt_arg('dropout', 0.0)} horizon={_ckpt_arg('horizon', DIFFUSION_HORIZON)}")
+
         diff_model = build_denoiser(
             arch=args.diff_arch,
-            horizon=DIFFUSION_HORIZON,
+            horizon=_ckpt_arg("horizon", DIFFUSION_HORIZON),
             traj_dim=traj_dim,
             cond_dim=cond_dim,
             state_dim=state_dim,
             action_dim=action_dim,
+            hidden_dim=_ckpt_arg("hidden_dim", 1024),
+            depth=_ckpt_arg("depth", 6),
+            time_emb_dim=_ckpt_arg("time_emb_dim", 128),
+            dropout=_ckpt_arg("dropout", 0.0),
         ).to(DEVICE)
 
-        ckpt = torch.load(args.diff_ckpt, map_location="cpu")
         state_dict = ckpt["model_state"] if isinstance(ckpt, dict) and "model_state" in ckpt else ckpt
         diff_model.load_state_dict(state_dict)
         diff_model.eval()

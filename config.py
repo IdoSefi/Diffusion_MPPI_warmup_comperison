@@ -48,7 +48,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SEED = 42
 
 # Guided diffusion defaults (planning)
-GUIDANCE_SCALE = 0.1
+GUIDANCE_SCALE = 0.0
 GUIDANCE_GAMMA = 0.997
 
 # Diffusion training defaults (paper-aligned)

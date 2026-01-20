@@ -654,6 +654,13 @@ def main():
             if args.max_steps and global_step >= args.max_steps:
                 stop_training = True
                 print(f"[stop] Reached max_steps={args.max_steps}, stopping training.")
+                # Save checkpoint before breaking
+                ckpt_path = os.path.join(args.out_dir, f"ckpt_early_stop_epoch_{epoch:03d}_step_{global_step}.pt")
+                ema_state = ema_model.state_dict() if ema_model is not None else None
+                save_checkpoint(ckpt_path, model, optimizer, global_step, args, ema_state=ema_state)
+                print(f"[early stop ckpt] saved: {ckpt_path}")
+                if args.use_wandb:
+                    wandb.save(ckpt_path, base_path=os.path.dirname(ckpt_path))
                 break
 
         if stop_training:
