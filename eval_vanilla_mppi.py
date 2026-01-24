@@ -23,6 +23,8 @@ def run_eval(args):
     # Create logs dir
     os.makedirs(args.logs_dir, exist_ok=True)
     print(f"Loading Minari dataset: {DATASET_ID}")
+    with open(f"{args.logs_dir}/run_args.json", "w") as f:
+        json.dump(vars(args), f, indent=2)
         
     dataset = minari.load_dataset(DATASET_ID, download=False)
     print("Recovering environment from dataset...")
@@ -84,6 +86,85 @@ def run_eval(args):
     print("Collision sanity check passed.")
     # ------------------------------
 
+    # --- Goal randomization helpers ---
+    goal_rng = np.random.default_rng(args.seed)
+    free_cells = None
+    if maze_handler.maze_map is not None:
+        free_cells = np.argwhere(maze_handler.maze_map == 0)
+
+    def _try_set_attr(obj, name, value):
+        if hasattr(obj, name):
+            try:
+                setattr(obj, name, value)
+                return True
+            except Exception:
+                return False
+        return False
+
+    def _set_env_goal(goal_xy, goal_cell):
+        unwrapped = env.unwrapped
+        for fn_name in ("set_goal", "set_goal_xy", "set_goal_pos", "set_goal_position"):
+            fn = getattr(unwrapped, fn_name, None)
+            if callable(fn):
+                try:
+                    fn(goal_xy)
+                    return True
+                except TypeError:
+                    try:
+                        fn(float(goal_xy[0]), float(goal_xy[1]))
+                        return True
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+        goal_xy_arr = np.array(goal_xy, dtype=np.float32)
+        if _try_set_attr(unwrapped, "goal", goal_xy_arr):
+            return True
+        if _try_set_attr(unwrapped, "_goal", goal_xy_arr):
+            return True
+
+        if goal_cell is not None:
+            goal_cell_arr = np.array(goal_cell, dtype=np.int64)
+            if _try_set_attr(unwrapped, "goal_cell", goal_cell_arr):
+                return True
+            if _try_set_attr(unwrapped, "_goal_cell", goal_cell_arr):
+                return True
+            maze = getattr(unwrapped, "maze", None)
+            if maze is not None and _try_set_attr(maze, "goal_cell", goal_cell_arr):
+                return True
+
+        maze = getattr(unwrapped, "maze", None)
+        if maze is not None and _try_set_attr(maze, "goal", goal_xy_arr):
+            return True
+
+        return False
+
+    def _update_obs_goal(obs, goal_xy):
+        if isinstance(obs, dict) and "desired_goal" in obs:
+            g = np.array(obs["desired_goal"], dtype=np.float32)
+            g = g.copy()
+            g[..., :2] = goal_xy
+            obs["desired_goal"] = g
+            return obs
+        if isinstance(obs, np.ndarray) and obs.shape[-1] >= 6:
+            obs = obs.copy()
+            obs[..., 4:6] = goal_xy
+        return obs
+
+    def _maybe_randomize_goal(obs):
+        if args.fixed_goal:
+            return obs
+        if free_cells is None or len(free_cells) == 0:
+            print("Warning: No maze map/free cells available; keeping env goal.")
+            return obs
+        row, col = free_cells[int(goal_rng.integers(len(free_cells)))]
+        goal_xy = np.array(maze_handler.grid_to_world(int(col), int(row)), dtype=np.float32)
+        if not _set_env_goal(goal_xy, (int(row), int(col))):
+            print("Warning: Could not set randomized goal on env; keeping env goal.")
+            return obs
+        return _update_obs_goal(obs, goal_xy)
+    # --------------------------------
     
     # Initialize implementation
     controller = MPPIController(maze_handler=maze_handler, device=DEVICE, plan_iteration=args.plan_iteration)
@@ -154,6 +235,7 @@ def run_eval(args):
     
     for ep in range(args.episodes):
         obs, info = env.reset(seed=args.seed + ep) # Deterministic per episode
+        obs = _maybe_randomize_goal(obs)
         
         # Grid video writer for this episode (optional)
         grid_writer = None
@@ -199,7 +281,7 @@ def run_eval(args):
                 
             # Parse state
             state_np = parse_obs(obs)
-            
+
             # Plan
             t0 = time.time()
             if args.plan_method == "diffusion_only":
@@ -214,14 +296,25 @@ def run_eval(args):
                     device=DEVICE,
                     return_numpy=True,
                 )  # (DIFFUSION_HORIZON, traj_dim), numpy where traj_dim = state_dim + action_dim
-                
+
                 # Extract actions from trajectory (last action_dim dimensions)
                 u_traj = traj[:, state_dim:]  # (DIFFUSION_HORIZON, action_dim)
 
-                action = u_traj[0]  # first action of the sampled plan (receding horizon) 
+                action = u_traj[0]  # first action of the sampled plan (receding horizon)
 
             elif args.plan_method == "mppi_only":
-                action = controller.get_action(state_np)
+                # Use a time-bounded MPPI refinement loop, similar to mppi_warmstart_by_diffusion
+                plan_count += 1
+                plan_start = time.time()
+                state_t = torch.tensor(state_np, dtype=torch.float32, device=DEVICE)
+                action_t = controller.mppi.command(state_t)
+                end_time = plan_start + args.warmstart_time_limit
+                refinement_iters = 0
+                while time.time() < end_time:
+                    action_t = controller.mppi.command(state_t, shift_nominal_trajectory=False)
+                    refinement_iters += 1
+                mppi_refinement_count += refinement_iters
+                action = action_t.cpu().numpy()
 
             elif args.plan_method == "mppi_warmstart_by_diffusion":
                 if not action_buffer:
@@ -247,6 +340,8 @@ def run_eval(args):
                     action_t = controller.mppi.command(state_t)
                     end_time = plan_start + args.warmstart_time_limit
                     refinement_iters = 0
+                    diffusion_end = time.time()
+                    print(f"Diffusion planning took {diffusion_end - plan_start:.3f} seconds")
                     while time.time() < end_time:
                         action_t = controller.mppi.command(state_t, shift_nominal_trajectory=False)
                         refinement_iters += 1
@@ -399,6 +494,7 @@ if __name__ == "__main__":
     parser.add_argument("--grid_video_fps", type=int, default=20)
     parser.add_argument("--grid_cell_px", type=int, default=24)
     parser.add_argument("--plan_with_BFS", action="store_true", help="Use BFS distance field for planning")
+    parser.add_argument("--fixed_goal", action="store_true", help="Keep the env-provided goal (disable randomization)")
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--plan_iteration", type=int, default=1)
     parser.add_argument("--logs_dir", type=str, default="logs", help="Directory to save logs and videos")
