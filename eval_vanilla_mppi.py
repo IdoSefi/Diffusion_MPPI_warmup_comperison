@@ -103,7 +103,7 @@ def run_eval(args):
 
     def _set_env_goal(goal_xy, goal_cell):
         unwrapped = env.unwrapped
-        for fn_name in ("set_goal", "set_goal_xy", "set_goal_pos", "set_goal_position"):
+        for fn_name in ("set_goal", "set_goal_xy", "set_goal_pos", "set_goal_position", "_set_goal"):
             fn = getattr(unwrapped, fn_name, None)
             if callable(fn):
                 try:
@@ -122,6 +122,14 @@ def run_eval(args):
         if _try_set_attr(unwrapped, "goal", goal_xy_arr):
             return True
         if _try_set_attr(unwrapped, "_goal", goal_xy_arr):
+            return True
+        if _try_set_attr(unwrapped, "goal_xy", goal_xy_arr):
+            return True
+        if _try_set_attr(unwrapped, "_goal_xy", goal_xy_arr):
+            return True
+        if _try_set_attr(unwrapped, "goal_pos", goal_xy_arr):
+            return True
+        if _try_set_attr(unwrapped, "_goal_pos", goal_xy_arr):
             return True
 
         if goal_cell is not None:
@@ -152,18 +160,32 @@ def run_eval(args):
             obs[..., 4:6] = goal_xy
         return obs
 
-    def _maybe_randomize_goal(obs):
+    def _sample_random_goal():
         if args.fixed_goal:
-            return obs
+            return None, None
         if free_cells is None or len(free_cells) == 0:
             print("Warning: No maze map/free cells available; keeping env goal.")
-            return obs
+            return None, None
         row, col = free_cells[int(goal_rng.integers(len(free_cells)))]
         goal_xy = np.array(maze_handler.grid_to_world(int(col), int(row)), dtype=np.float32)
-        if not _set_env_goal(goal_xy, (int(row), int(col))):
-            print("Warning: Could not set randomized goal on env; keeping env goal.")
-            return obs
-        return _update_obs_goal(obs, goal_xy)
+        return goal_xy, (int(row), int(col))
+
+    def _reset_with_goal(seed, goal_xy, goal_cell):
+        if goal_xy is None:
+            return env.reset(seed=seed)
+        options = {"goal": np.array(goal_xy, dtype=np.float32)}
+        if goal_cell is not None:
+            options["goal_cell"] = np.array(goal_cell, dtype=np.int64)
+        try:
+            obs, info = env.reset(seed=seed, options=options)
+        except TypeError:
+            obs, info = env.reset(seed=seed)
+        except Exception:
+            obs, info = env.reset(seed=seed)
+        if not _set_env_goal(goal_xy, goal_cell):
+            print("Warning: Could not set randomized goal on env; rendering may show the default goal.")
+        obs = _update_obs_goal(obs, goal_xy)
+        return obs, info
     # --------------------------------
     
     # Initialize implementation
@@ -218,10 +240,11 @@ def run_eval(args):
     print("Controller agent radius:", getattr(controller.maze_handler, "agent_radius", None))
     
     # --- Normalization Stats ---
-    norm_mean_full = np.array(NORM_MEAN, dtype=np.float32)
-    norm_std_full = np.array(NORM_STD, dtype=np.float32)
-    cond_mean = norm_mean_full[:state_dim]
-    cond_std = norm_std_full[:state_dim]
+    if need_diffusion:
+        norm_mean_full = np.array(NORM_MEAN, dtype=np.float32)
+        norm_std_full = np.array(NORM_STD, dtype=np.float32)
+        cond_mean = norm_mean_full[:state_dim]
+        cond_std = norm_std_full[:state_dim]
     # ---------------------------
     
     success_count = 0
@@ -234,8 +257,8 @@ def run_eval(args):
     }
     
     for ep in range(args.episodes):
-        obs, info = env.reset(seed=args.seed + ep) # Deterministic per episode
-        obs = _maybe_randomize_goal(obs)
+        goal_xy, goal_cell = _sample_random_goal()
+        obs, info = _reset_with_goal(seed=args.seed + ep, goal_xy=goal_xy, goal_cell=goal_cell)
         
         # Grid video writer for this episode (optional)
         grid_writer = None
@@ -313,6 +336,7 @@ def run_eval(args):
                 while time.time() < end_time:
                     action_t = controller.mppi.command(state_t, shift_nominal_trajectory=False)
                     refinement_iters += 1
+                print(f"MPPI planning took {time.time() - plan_start:.3f} seconds with {refinement_iters} refinements")
                 mppi_refinement_count += refinement_iters
                 action = action_t.cpu().numpy()
 
