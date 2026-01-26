@@ -32,12 +32,12 @@ from typing import Any, Dict, List, Optional
 # USER-EDITABLE PARAMETERS
 # -----------------------------
 
-RUN_MODE = "mlp"  # or "all"
+RUN_MODE = "transformer"  # or "all"
 
 DIFF_CKPTS = {
     "mlp": "/home/user_229/Diffusion_MPPI_comp/checkpoints_dir/eval_saturday_morning/mlp_very_good_horizon_100/val_best_4.pt",
     "cnn": "/home/user_229/Diffusion_MPPI_comp/results_cnn_turbo/val_best_22.pt",
-    "transformer": "/home/user_229/Diffusion_MPPI_comp/checkpoints_dir/eval_saturday_morning/transformer_bad/val_best_4.pt",
+    "transformer": "/home/user_229/Diffusion_MPPI_comp/results_trans_large/val_best_14.pt",
 }
 
 WARMSTART_TIME_LIMIT = 0.21
@@ -161,6 +161,8 @@ def _select_experiments() -> List[Experiment]:
         return [e for e in all_experiments if e.name in {"warmstart_diffusion_cnn"}]
     if RUN_MODE == "mlp":
         return [e for e in all_experiments if e.name in {"warmstart_diffusion_mlp"}]
+    if RUN_MODE == "transformer":
+        return [e for e in all_experiments if e.name in {"warmstart_diffusion_transformer"}]
     raise ValueError(f"Unknown RUN_MODE='{RUN_MODE}'. Use 'mppi_and_mlp' or 'all'.")
 
 
