@@ -10,6 +10,17 @@ Authors: Ido Sefi (208008698), Yoav Vinov (208300954)
 
 [![Demo video](https://img.youtube.com/vi/Vm95qW2hwg8/0.jpg)](https://www.youtube.com/watch?v=Vm95qW2hwg8)
 
+## MPPI warmstarting pipline:
+
+<img width="1362" height="271" alt="image" src="https://github.com/user-attachments/assets/b610ef92-9d5f-43b4-9652-8af5d8f9e422" />
+**Fixed compute budget.** We generate a trajectory proposal with a diffusion planner (trained offline on D4RL PointMaze), then optionally refine it with MPPI using the **remaining** planning budget. This “warm-start MPPI” trades diffusion sampling time for fewer MPPI iterations.
+
+## 📌 Key Idea
+
+- **MPPI** is robust but typically starts from a random trajectory → needs iterations.
+- **Diffusion** proposes a full trajectory from offline data quickly, but can be imperfect.
+- **Warm-start** = initialize MPPI with the diffusion proposal and refine (MPC loop).
+- We compare diffusion denoiser backbones: **MLP vs 1D CNN vs Transformer**.
 
 ## Overview
 Robotic control often benefits from look-ahead planning. In PointMaze-style navigation, the cost landscape is non-convex
@@ -40,10 +51,15 @@ and planning latency, and compares denoiser backbones (MLP / CNN / Transformer).
 We suspect this is because PointMaze uses low-dimensional actions where classic MPPI refinement is very effective, and diffusion sampling consumes part of the available time budget.
 <img width="2037" height="1131" alt="image" src="https://github.com/user-attachments/assets/fa281b9a-944d-4c4d-9fc5-7da6a59a1b43" />
 
-### architectures used in the experiment:
-* MLP (1,438,850 params, depth 4)
-* 1-D CNN: (3,426,492 param, depth 6)
-* Transformer: (19,527,170 params, depth 6)
+## Denoiser Backbones (MLP / CNN / Transformer)
+
+We train diffusion to generate a **horizon-100** trajectory. For CNN and Transformer we add **positional embeddings** to encode time along the trajectory.
+
+| Denoiser | Depth | #Params | Notes |
+|---|---:|---:|---|
+| MLP | 4 | 1,438,850 | baseline |
+| 1D CNN | 6 | 3,426,492 | + positional embedding |
+| Transformer | 6 | 19,527,170 | + positional embedding |
 
 the experiment was evaluated over 80 episode for each arch at each n_actions.
 each arch was given 0.2 seconds to make the diffusion sampling + MPPI refinment steps with the leftover time. the MPPI only did MPPI iterations for 0.2 seconds.
