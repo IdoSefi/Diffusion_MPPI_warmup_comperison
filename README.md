@@ -1,23 +1,45 @@
-# Diffusion + MPPI for PointMaze
+# Diffusion based warm starting MPPI controller for robotic planning
+
+### this project was done in Deep Learning course at the Technion: 046217
+### authors: Ido Sefi 208008698, Yoav Vinov 208300954
 
 Diffusion-based trajectory proposal + MPPI refinement for PointMaze (Gymnasium Robotics / Minari D4RL).
-The diffusion model predicts state-action trajectories; MPPI refines or replaces them at execution time.
+Robotic control often needs **look-ahead planning**. In PointMaze-style navigation, the cost landscape is non-convex (walls, dead ends), so good behavior typically requires planning over a horizon.
 
-## Highlights
-- Conditional diffusion over state-action trajectories (planning horizon in `config.py`).
-- MPPI controller with analytic double-integrator dynamics and collision-aware costs.
-- Planning modes: MPPI-only, diffusion-only, and diffusion warm-started MPPI.
-- Optional BFS distance field and 2D grid video visualization of planned horizons.
+**MPPI** is a robust, iterative sampling-based planner—but it usually starts from a **random initial guess**, so converging to a good solution can be slow when compute/time is limited.  
+A **diffusion planner** can generate a plausible action/trajectory proposal quickly from offline data, but it can still make mistakes.
 
-## Repo layout (key files)
-- `config.py`: Central defaults (dataset/env IDs, horizons, MPPI/diffusion hyperparams, normalization stats).
-- `run_diffusion_and_mppi.py`: Main evaluation/planning entry point.
-- `diffusion/train_diffusion.py`: Trainer for diffusion models (MLP/CNN/Transformer).
-- `diffusion/arch/`: Model architectures.
-- `diffusion/diffusion_model_sampling.py`: Diffusion sampling + optional guidance.
-- `data/minari_dataset.py`: Minari dataset loader + normalization for diffusion training.
-- `MPPI/`: Dynamics, costs, grid viz, and MPPI controller wrapper.
-- `TRAINING_AND_EVAL.md`: Expanded notes and examples.
+This project tests whether using **diffusion as a warm-start for MPPI** improves the trade-off between **trajectory quality** and **planning latency**, and compares denoiser backbones (MLP / CNN / Transformer).
+
+[![Demo video](https://youtu.be/Vm95qW2hwg8/hqdefault.jpg)](https://youtu.be/Vm95qW2hwg8)
+
+
+---
+
+## Repo layout
+
+```
+.
+├── run_diffusion_and_mppi.py          # main evaluation / planning entrypoint
+├── config.py                          # default hyperparams (env, horizons, costs, normalization)
+├── requirements.txt
+├── data/
+│   ├── minari_dataset.py              # Minari dataset loader + normalization for diffusion training
+│   └── verify_dataset.py              # dataset sanity checks / utilities
+├── diffusion/
+│   ├── train_diffusion.py             # diffusion trainer (HuggingFace diffusers scheduler)
+│   ├── diffusion_model_sampling.py    # sampling + first-state inpainting + optional guidance
+│   ├── diffusion_model_factory.py     # model builder (mlp/cnn/transformer)
+│   └── arch/                          # backbone architectures
+└── MPPI/
+    ├── mppi_controller.py             # MPPI wrapper (pytorch-mppi)
+    ├── dynamics.py                    # analytic double integrator + collision handling hooks
+    ├── costs.py                       # goal + collision + control + BFS shaping
+    ├── env_utils.py                   # PointMaze parsing helpers
+    └── grid_viz.py                    # 2D grid plan visualization video
+```
+
+---
 
 ## Setup
 Install dependencies:
@@ -25,7 +47,6 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-If you want GPU acceleration, install a CUDA-matching PyTorch build first, then install the rest.
 
 ## Dataset
 Training downloads the dataset automatically, but evaluation uses `download=False`.
@@ -129,13 +150,9 @@ Each evaluation run writes:
 - videos in `logs/videos/` if `--save_video`
 - grid videos in `logs/grid_videos/` if `--save_grid_video`
 
-## Sweeps and helpers
-- `run_eval_sweep.py`: Batch evaluation across action-horizon settings (edit `DIFF_CKPTS` inside).
-- `eval_sweep_denoise.py`: Additional sweep utilities (experimental).
-- `A_helper_scripts/`: Misc. plotting and analysis helpers.
+---
 
-## Tips / troubleshooting
-- Diffusion-based planning asserts that `--diff_ckpt` is provided.
-- Evaluation uses `minari.load_dataset(..., download=False)`. Pre-download if needed.
-- `run_diffusion_and_mppi.py` sets `MUJOCO_GL=egl` at import time. For on-screen rendering, change that line to `glfw` (or remove it) and use a display.
-- Normalization stats (`NORM_MEAN`, `NORM_STD`) live in `config.py` and are used in training and sampling.
+## Related work
+
+this project was built upon "planning with diffusion": https://diffusion-planning.github.io/
+
