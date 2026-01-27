@@ -3,16 +3,45 @@
 ### this project was done in Deep Learning course at the Technion: 046217
 ### authors: Ido Sefi 208008698, Yoav Vinov 208300954
 
-Diffusion-based trajectory proposal + MPPI refinement for PointMaze (Gymnasium Robotics / Minari D4RL).
-Robotic control often needs **look-ahead planning**. In PointMaze-style navigation, the cost landscape is non-convex (walls, dead ends), so good behavior typically requires planning over a horizon.
+Diffusion-based warm-start for an MPPI controller in robotic planning
 
-**MPPI** is a robust, iterative sampling-based planner—but it usually starts from a **random initial guess**, so converging to a good solution can be slow when compute/time is limited.  
-A **diffusion planner** can generate a plausible action/trajectory proposal quickly from offline data, but it can still make mistakes.
-
-This project tests whether using **diffusion as a warm-start for MPPI** improves the trade-off between **trajectory quality** and **planning latency**, and compares denoiser backbones (MLP / CNN / Transformer).
+This project was done as part of the Deep Learning course at the Technion (046217).
+Authors: Ido Sefi (208008698), Yoav Vinov (208300954)
 
 [![Demo video](https://img.youtube.com/vi/Vm95qW2hwg8/0.jpg)](https://www.youtube.com/watch?v=Vm95qW2hwg8)
 
+
+## Overview
+Robotic control often benefits from look-ahead planning. In PointMaze-style navigation, the cost landscape is non-convex
+(walls, dead ends), so good behavior typically requires planning over a horizon.
+
+MPPI is a robust, iterative sampling-based planner, but it often starts from a random initial guess.
+Under tight compute/time budgets, converging to a good solution can be slow.
+A diffusion planner can generate a plausible trajectory proposal quickly from offline data, but it can still make mistakes.
+
+This project tests whether using diffusion as a warm-start for MPPI improves the trade-off between trajectory quality
+and planning latency, and compares denoiser backbones (MLP / CNN / Transformer).
+
+## Implementation notes
+- Diffusion defines the iterative denoising process, while the backbone architecture (MLP/CNN/Transformer) executes the denoising steps.
+- We incorporate positional embeddings into both CNN and Transformer denoisers to encode time information in the action sequence.
+- Trajectory horizon for diffusion samples: 100 actions.
+
+## Experiments (high-level)
+- Baseline: MPPI only.
+- Warm-start: sample one diffusion trajectory, use it to initialize MPPI (instead of a random guess), then run MPPI refinement until a fixed time budget.
+- Evaluation: 80 episodes, 30 denoising steps.
+- We also study replanning frequency by varying n_actions (how many actions are executed from each plan before replanning).
+
+## Results (key findings)
+- CNN and Transformer warm-starts produce better trajectories than the MLP warm-start (lower mean episode steps).
+- However, under the same planning time budget, MPPI-only achieved the best overall performance in this PointMaze setup.
+- Increasing n_actions (executing more actions per plan before replanning) generally degraded warm-start performance, especially for the MLP.
+We suspect this is because PointMaze uses low-dimensional actions where classic MPPI refinement is very effective, and diffusion sampling consumes part of the available time budget.
+
+## Future work
+- Test on higher-dimensional control tasks, where a strong learned proposal may provide larger gains.
+- Explore stronger guidance and improved cost-aware sampling.
 
 ---
 
