@@ -11,7 +11,7 @@ A **diffusion planner** can generate a plausible action/trajectory proposal quic
 
 This project tests whether using **diffusion as a warm-start for MPPI** improves the trade-off between **trajectory quality** and **planning latency**, and compares denoiser backbones (MLP / CNN / Transformer).
 
-[![Demo video](https://youtu.be/Vm95qW2hwg8/hqdefault.jpg)](https://youtu.be/Vm95qW2hwg8)
+[![Demo video](https://img.youtube.com/vi/Vm95qW2hwg8/0.jpg)](https://www.youtube.com/watch?v=Vm95qW2hwg8)
 
 
 ---
