@@ -40,6 +40,14 @@ and planning latency, and compares denoiser backbones (MLP / CNN / Transformer).
 We suspect this is because PointMaze uses low-dimensional actions where classic MPPI refinement is very effective, and diffusion sampling consumes part of the available time budget.
 <img width="2037" height="1131" alt="image" src="https://github.com/user-attachments/assets/fa281b9a-944d-4c4d-9fc5-7da6a59a1b43" />
 
+### architectures used in the experiment:
+* MLP (1,438,850 params, depth 4)
+* 1-D CNN: (3,426,492 param, depth 6)
+* Transformer: (19,527,170 params, depth 6)
+
+the experiment was evaluated over 80 episode for each arch at each n_actions.
+each arch was given 0.2 seconds to make the diffusion sampling + MPPI refinment steps with the leftover time. the MPPI only did MPPI iterations for 0.2 seconds.
+each plan is for a trajectory of 100 actions. from it only the first n_actions are excecuted.
 
 ## Future work
 - Test on higher-dimensional control tasks, where a strong learned proposal may provide larger gains.
