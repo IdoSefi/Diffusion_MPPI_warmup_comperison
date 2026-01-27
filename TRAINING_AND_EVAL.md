@@ -42,7 +42,7 @@ python -m diffusion.train_diffusion \
   --batch_size 256 \
   --model_module diffusion.arch.diffusion_mlp_arch \
   --model_class TrajectoryMLPDenoiser \
-  --out_dir checkpoints_diffusion
+  --out_dir diffusion/checkpoints
 ```
 
 ### Other architectures
@@ -63,7 +63,7 @@ python -m diffusion.train_diffusion \
 - `--num_diffusion_steps`, `--beta_start`, `--beta_end` control the noise schedule.
 - `--save_every_epochs` and `--save_every_steps` control checkpoint cadence.
 - `--resume path/to/ckpt.pt` resumes training.
-- Checkpoints are written to `--out_dir`:
+- Checkpoints are written to `--out_dir` (default now `diffusion/checkpoints`):
   - `val_best_*.pt` (best-on-val checkpoints)
   - `ckpt_epoch_*.pt`, `ckpt_step_*.pt` (periodic)
   - `final_step_*.pt` (final)
@@ -96,7 +96,7 @@ python run_diffusion_and_mppi.py \
 python run_diffusion_and_mppi.py \
   --plan_method diffusion_only \
   --diff_arch mlp \
-  --diff_ckpt checkpoints_diffusion/final_step_XXXXX.pt \
+  --diff_ckpt diffusion/checkpoints/final_step_XXXXX.pt \
   --episodes 10 \
   --logs_dir logs/diffusion_only
 ```
@@ -108,7 +108,7 @@ python run_diffusion_and_mppi.py \
   --apply_first_n_actions 3 \
   --warmstart_time_limit 1.0 \
   --diff_arch mlp \
-  --diff_ckpt checkpoints_diffusion/val_best_1.pt \
+  --diff_ckpt diffusion/checkpoints/val_best_1.pt \
   --episodes 10 \
   --logs_dir logs/warmstart
 ```
