@@ -1,7 +1,7 @@
 import torch
 import numpy as np
 
-# Environment
+# Environment 
 ENV_ID = "PointMaze_Medium-v3"
 DATASET_ID = "D4RL/pointmaze/medium-v2"
 NORM_MEAN = np.array([-0.4930957577487178, -0.7310561716627902, 0.0002654821305731727, -0.0001828835285419854, -0.07456594410409208, 0.023601038893370386, -0.004471684850459553, -0.003924843760835534], dtype=np.float32)
