@@ -7,9 +7,9 @@ import importlib
 
 # Default conventions (module + class names)
 _ARCH_REGISTRY = {
-    "mlp": ("diffusion_mlp_arch", "TrajectoryMLPDenoiser"),
-    "cnn": ("diffusion_cnn_arch", "TrajectoryCNNDenoiser"),
-    "transformer": ("diffusion_transformer_arch", "TrajectoryTransformerDenoiser"),
+    "mlp": ("diffusion.arch.diffusion_mlp_arch", "TrajectoryMLPDenoiser"),
+    "cnn": ("diffusion.arch.diffusion_cnn_arch", "TrajectoryCNNDenoiser"),
+    "transformer": ("diffusion.arch.diffusion_transformer_arch", "TrajectoryTransformerDenoiser"),
 }
 
 
@@ -39,9 +39,9 @@ def build_denoiser(
       OR a tuple/tensor where first item is epsilon.
 
     By default it looks for:
-      - MLP:         diffusion_mlp_arch.TrajectoryMLPDenoiser
-      - CNN:         diffusion_cnn_arch.TrajectoryCNNDenoiser
-      - Transformer: diffusion_transformer_arch.TrajectoryTransformerDenoiser
+      - MLP:         diffusion.arch.diffusion_mlp_arch.TrajectoryMLPDenoiser
+      - CNN:         diffusion.arch.diffusion_cnn_arch.TrajectoryCNNDenoiser
+      - Transformer: diffusion.arch.diffusion_transformer_arch.TrajectoryTransformerDenoiser
     """
     arch = arch.lower().strip()
     if module_name is None or class_name is None:

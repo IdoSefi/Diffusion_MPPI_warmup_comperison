@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sweep wrapper for eval_vanilla_mppi.py
+Sweep wrapper for run_diffusion_and_mppi.py
 
 Produces:
   - Per-run folders (each contains vanilla_mppi_results.json + run.log + optional videos/)
@@ -35,8 +35,8 @@ SWEEP_MODE = "denoise_steps" #"n_actions"  # <-- change to "denoise_steps" for t
 #   "all"          : mppi_only + diffusion warmstart (mlp/cnn/transformer)
 ARCH_PROFILE = "all_but_mppi"  # <-- set to "all" when ready
 
-# Path to eval script (put this wrapper next to eval_vanilla_mppi.py to keep default)
-EVAL_SCRIPT_PATH = (Path(__file__).resolve().parent / "eval_vanilla_mppi.py")
+# Path to eval script (put this wrapper next to run_diffusion_and_mppi.py to keep default)
+EVAL_SCRIPT_PATH = (Path(__file__).resolve().parent / "run_diffusion_and_mppi.py")
 
 # Output root
 OUT_BASE_DIR = Path("eval_sweeps")
@@ -46,7 +46,10 @@ EPISODES_PER_RUN = 80
 BASE_SEED = 42
 PLAN_ITERATION = 1
 
-# Warmstart budget used by eval_vanilla_mppi.py (you said you'll insert)
+# Plan method for diffusion-based arches
+DIFFUSION_PLAN_METHOD = "diffusion_and_one_MPPI_refine"  # or "mppi_warmstart_by_diffusion"
+
+# Warmstart budget used by run_diffusion_and_mppi.py (you said you'll insert)
 WARMSTART_TIME_LIMIT = 0.25  
 
 # Checkpoints (you said you'll insert)
@@ -73,7 +76,7 @@ FIXED_N_ACTIONS_FOR_DENOISE_SWEEP = 10  # <-- TODO: set your hardcoded n_actions
 @dataclass(frozen=True)
 class ArchSpec:
     key: str                 # folder + curve name
-    plan_method: str         # "mppi_only" / "mppi_warmstart_by_diffusion"
+    plan_method: str         # "mppi_only" / "mppi_warmstart_by_diffusion" / "diffusion_and_one_MPPI_refine"
     diff_arch: Optional[str] # None for mppi_only; else "mlp"/"cnn"/"transformer"
 
 
@@ -125,9 +128,9 @@ def _load_json(path: Path) -> Any:
 def _get_arches() -> List[ArchSpec]:
     all_arches = [
         ArchSpec(key="mppi_only", plan_method="mppi_only", diff_arch=None),
-        ArchSpec(key="warmstart_mlp", plan_method="mppi_warmstart_by_diffusion", diff_arch="mlp"),
-        ArchSpec(key="warmstart_cnn", plan_method="mppi_warmstart_by_diffusion", diff_arch="cnn"),
-        ArchSpec(key="warmstart_transformer", plan_method="mppi_warmstart_by_diffusion", diff_arch="transformer"),
+        ArchSpec(key="warmstart_mlp", plan_method=DIFFUSION_PLAN_METHOD, diff_arch="mlp"),
+        ArchSpec(key="warmstart_cnn", plan_method=DIFFUSION_PLAN_METHOD, diff_arch="cnn"),
+        ArchSpec(key="warmstart_transformer", plan_method=DIFFUSION_PLAN_METHOD, diff_arch="transformer"),
     ]
     if ARCH_PROFILE == "mppi_and_mlp":
         return [a for a in all_arches if a.key in {"mppi_only", "warmstart_mlp"}]

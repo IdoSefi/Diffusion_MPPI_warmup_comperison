@@ -10,14 +10,14 @@ import minari
 import gymnasium as gym
 
 from config import ENV_ID, DATASET_ID, SEED, DEVICE, DT, HORIZON, DIFFUSION_HORIZON, GUIDANCE_GAMMA, NORM_MEAN, NORM_STD
-from env_utils import parse_obs, MazeHandler
-from mppi_controller import MPPIController
-from grid_viz import GridVideoWriter, GridVideoConfig
+from MPPI.env_utils import parse_obs, MazeHandler
+from MPPI.mppi_controller import MPPIController
+from MPPI.grid_viz import GridVideoWriter, GridVideoConfig
 
 #diffusion models
 from diffusers import DDPMScheduler
-from diffusion_model_sampling import sample_state_action_trajectory
-from diffusion_model_factory import build_denoiser 
+from diffusion.diffusion_model_sampling import sample_state_action_trajectory
+from diffusion.diffusion_model_factory import build_denoiser 
 
 def run_eval(args):
     # Create logs dir
@@ -192,7 +192,7 @@ def run_eval(args):
     controller = MPPIController(maze_handler=maze_handler, device=DEVICE, plan_iteration=args.plan_iteration)
 
     #diffusion model initialization
-    need_diffusion = args.use_diffusion_policy or args.plan_method in ["diffusion_only", "mppi_warmstart_by_diffusion"]
+    need_diffusion = args.use_diffusion_policy or args.plan_method in ["diffusion_only", "mppi_warmstart_by_diffusion", "diffusion_and_one_MPPI_refine"]
     if need_diffusion:
         assert args.diff_ckpt is not None, "--diff_ckpt is required for diffusion-based planning"
 
@@ -376,6 +376,38 @@ def run_eval(args):
                     action_buffer = [a.cpu().numpy() for a in plan_actions[:n]]
                 action = action_buffer.pop(0)
 
+            elif args.plan_method == "diffusion_and_one_MPPI_refine":
+                if not action_buffer:
+                    plan_count += 1
+                    plan_start = time.time()
+                    cond_norm = (state_np - cond_mean) / cond_std
+                    traj = sample_state_action_trajectory(
+                        model=diff_model,
+                        scheduler=diff_sched,
+                        cond=cond_norm,
+                        num_inference_steps=args.diff_num_inference_steps,
+                        state_mean=norm_mean_full,
+                        state_std=norm_std_full,
+                        device=DEVICE,
+                        return_numpy=True,
+                    )
+                    u_traj = traj[:, state_dim:]
+                    u_tensor = torch.tensor(u_traj, device=DEVICE, dtype=torch.float32)
+                    if u_tensor.shape[0] < HORIZON:
+                        u_tensor = torch.cat([u_tensor, u_tensor[-1:].repeat(HORIZON - u_tensor.shape[0], 1)], dim=0)
+                    controller.mppi.U = u_tensor[:HORIZON]
+                    state_t = torch.tensor(state_np, dtype=torch.float32, device=DEVICE)
+                    action_t = controller.mppi.command(state_t)
+                    diffusion_end = time.time()
+                    print(f"Diffusion planning took {diffusion_end - plan_start:.3f} seconds")
+                    action_t = controller.mppi.command(state_t, shift_nominal_trajectory=False)
+                    mppi_refinement_count += 1
+                    plan_actions = torch.cat([action_t.unsqueeze(0), controller.mppi.U[:-1]], dim=0)
+                    controller.mppi._last_plan_actions = plan_actions
+                    n = max(1, args.apply_first_n_actions)
+                    action_buffer = [a.cpu().numpy() for a in plan_actions[:n]]
+                action = action_buffer.pop(0)
+
             else:
                 raise ValueError(f"Unknown plan_method: {args.plan_method}")
             t1 = time.time()
@@ -522,7 +554,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--plan_iteration", type=int, default=1)
     parser.add_argument("--logs_dir", type=str, default="logs", help="Directory to save logs and videos")
-    parser.add_argument("--plan_method", type=str, default="diffusion_only", help="Planning method: diffusion_only, mppi_only, or mppi_warmstart_by_diffusion")
+    parser.add_argument("--plan_method", type=str, default="diffusion_only", help="Planning method: diffusion_only, mppi_only, mppi_warmstart_by_diffusion, or diffusion_and_one_MPPI_refine")
     parser.add_argument("--apply_first_n_actions", type=int, default=1, help="Number of planned actions to execute before replanning (warmstart mode)")
     parser.add_argument("--warmstart_time_limit", type=float, default=1.0, help="Seconds allocated to diffusion+MPPI planning in warmstart mode")
 

@@ -6,7 +6,7 @@ Generic trainer for conditional diffusion over state-action trajectories using H
 
 Project integration:
 - imports DATASET_ID, HORIZON, DEVICE, SEED from config.py
-- uses MinariDiffusionDataset from minari_dataset.py (returns dict with keys: 'state', 'traj_window')
+- uses MinariDiffusionDataset from data/minari_dataset.py (returns dict with keys: 'state', 'traj_window')
 
 Model contract (architecture-only):
 - forward(sample=x_t, timestep=t, cond=state, return_dict=True) -> output with `.sample` = eps_hat
@@ -16,12 +16,12 @@ Model contract (architecture-only):
     state:  (B, state_dim)
 
 Default model (MLP) expected at:
-  diffusion_mlp_arch.py : class TrajectoryMLPDenoiser
+  diffusion/arch/diffusion_mlp_arch.py : class TrajectoryMLPDenoiser
 but you can swap any architecture via CLI without touching this script.
 
 Example:
-  python train_diffusion.py --epochs 20 --batch_size 256 \
-    --model_module diffusion_mlp_arch --model_class TrajectoryMLPDenoiser
+  python -m diffusion.train_diffusion --epochs 20 --batch_size 256 \
+    --model_module diffusion.arch.diffusion_mlp_arch --model_class TrajectoryMLPDenoiser
 """
 
 from __future__ import annotations
@@ -58,9 +58,9 @@ from config import (
     NORM_MEAN,
     NORM_STD,
 )
-from minari_dataset import MinariDiffusionDataset
-from dynamics import AnalyticDoubleIntegrator
-from env_utils import MazeHandler
+from data.minari_dataset import MinariDiffusionDataset
+from MPPI.dynamics import AnalyticDoubleIntegrator
+from MPPI.env_utils import MazeHandler
 
 # --- diffusers scheduler ---
 try:
@@ -387,7 +387,7 @@ def main():
     parser.add_argument("--beta_end", type=float, default=2e-2)
 
     # Model loader (architecture-only)
-    parser.add_argument("--model_module", type=str, default="diffusion_mlp_arch")
+    parser.add_argument("--model_module", type=str, default="diffusion.arch.diffusion_mlp_arch")
     parser.add_argument("--model_class", type=str, default="TrajectoryMLPDenoiser")
     parser.add_argument("--hidden_dim", type=int, default=1024)
     parser.add_argument("--depth", type=int, default=6)
@@ -791,4 +791,4 @@ if __name__ == "__main__":
     main()
 
 #example of run with MLP:
-#python train_diffusion.py --epochs 20 --batch_size 256 --model_module diffusion_mlp_arch --model_class TrajectoryMLPDenoiser --use_wandb --visualize_trajectories 4 --wandb_group mlp_bringup
+#python -m diffusion.train_diffusion --epochs 20 --batch_size 256 --model_module diffusion.arch.diffusion_mlp_arch --model_class TrajectoryMLPDenoiser --use_wandb --visualize_trajectories 4 --wandb_group mlp_bringup

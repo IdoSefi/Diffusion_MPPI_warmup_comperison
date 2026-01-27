@@ -5,8 +5,8 @@ from config import (
     HORIZON, NUM_SAMPLES, NOISE_SIGMA, LAMBDA, 
     V_MIN, V_MAX, DEVICE
 )
-from dynamics import AnalyticDoubleIntegrator
-from costs import mppi_running_cost
+from .dynamics import AnalyticDoubleIntegrator
+from .costs import mppi_running_cost
 
 class MPPIController:
     def __init__(self, maze_handler=None, device="cpu", plan_iteration=1):

@@ -13,7 +13,7 @@ pip install -r requirements.txt
 Run the evaluation script:
 
 ```bash
-python eval_vanilla_mppi.py --episodes 10 --render 0
+python run_diffusion_and_mppi.py --episodes 10 --render 0
 ```
 
 ### Arguments
@@ -22,7 +22,7 @@ python eval_vanilla_mppi.py --episodes 10 --render 0
 - `--seed`: Random seed (default: 42).
 
 ## Key Components
-- `eval_vanilla_mppi.py`: Main entry point. Loads Minari dataset and runs eval loop.
+- `run_diffusion_and_mppi.py`: Main entry point. Loads Minari dataset and runs eval loop.
 - `mppi_controller.py`: Wrapper around `pytorch_mppi` that uses our custom dynamics/costs.
 - `dynamics.py`: Analytic double-integrator dynamics ($x_{t+1} \approx x_t + v_t \Delta t$).
 - `costs.py`: Running cost function (Goal distance + Collision + Control).

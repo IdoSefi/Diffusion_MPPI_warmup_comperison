@@ -7,11 +7,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from config import DATASET_ID, DEVICE, HORIZON
-from env_utils import MazeHandler
+from MPPI.env_utils import MazeHandler
 import gymnasium as gym
-from grid_viz import GridVideoWriter, GridVideoConfig
-from minari_dataset import MinariDiffusionDataset
-from dynamics import AnalyticDoubleIntegrator
+from MPPI.grid_viz import GridVideoWriter, GridVideoConfig
+from data.minari_dataset import MinariDiffusionDataset
+from MPPI.dynamics import AnalyticDoubleIntegrator
 import torch
 import os
 

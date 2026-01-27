@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sweep eval_vanilla_mppi.py over apply_first_n_actions and (selected) architectures,
+Sweep run_diffusion_and_mppi.py over apply_first_n_actions and (selected) architectures,
 and write combined JSON summaries.
 
 - n_actions in {3,6,...,30}
@@ -200,7 +200,7 @@ def _run_cmd_tee(cmd: List[str], run_log_path: Path, logger: TeeLogger) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--eval_script", type=str, default="eval_vanilla_mppi.py")
+    ap.add_argument("--eval_script", type=str, default="run_diffusion_and_mppi.py")
     ap.add_argument("--out_root", type=str, default="eval_sweeps")
     ap.add_argument("--episodes", type=int, default=EPISODES)
     ap.add_argument("--warmstart_time_limit", type=float, default=WARMSTART_TIME_LIMIT)
