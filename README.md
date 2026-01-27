@@ -13,14 +13,14 @@ Authors: Ido Sefi (208008698), Yoav Vinov (208300954)
 ## MPPI warmstarting pipline:
 
 <img width="1362" height="271" alt="image" src="https://github.com/user-attachments/assets/b610ef92-9d5f-43b4-9652-8af5d8f9e422" />
-**Fixed compute budget.** We generate a trajectory proposal with a diffusion planner (trained offline on D4RL PointMaze), then optionally refine it with MPPI using the **remaining** planning budget. This “warm-start MPPI” trades diffusion sampling time for fewer MPPI iterations.
+Fixed compute budget. We generate a trajectory proposal with a diffusion planner (trained offline on D4RL PointMaze), then optionally refine it with MPPI using the remaining planning budget. This warm-start MPPI trades diffusion sampling time for fewer MPPI iterations.
 
 ## 📌 Key Idea
 
-- **MPPI** is robust but typically starts from a random trajectory → needs iterations.
-- **Diffusion** proposes a full trajectory from offline data quickly, but can be imperfect.
-- **Warm-start** = initialize MPPI with the diffusion proposal and refine (MPC loop).
-- We compare diffusion denoiser backbones: **MLP vs 1D CNN vs Transformer**.
+- MPPI is robust but typically starts from a random trajectory → needs iterations.
+- Diffusion proposes a full trajectory from offline data quickly, but can be imperfect.
+- Warm-start = initialize MPPI with the diffusion proposal and refine (MPC loop).
+- We compare diffusion denoiser backbones: MLP vs 1D CNN vs Transformer.
 
 ## Overview
 Robotic control often benefits from look-ahead planning. In PointMaze-style navigation, the cost landscape is non-convex
