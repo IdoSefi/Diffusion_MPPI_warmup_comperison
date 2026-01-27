@@ -38,6 +38,8 @@ and planning latency, and compares denoiser backbones (MLP / CNN / Transformer).
 - However, under the same planning time budget, MPPI-only achieved the best overall performance in this PointMaze setup.
 - Increasing n_actions (executing more actions per plan before replanning) generally degraded warm-start performance, especially for the MLP.
 We suspect this is because PointMaze uses low-dimensional actions where classic MPPI refinement is very effective, and diffusion sampling consumes part of the available time budget.
+<img width="2037" height="1131" alt="image" src="https://github.com/user-attachments/assets/fa281b9a-944d-4c4d-9fc5-7da6a59a1b43" />
+
 
 ## Future work
 - Test on higher-dimensional control tasks, where a strong learned proposal may provide larger gains.
