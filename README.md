@@ -14,11 +14,8 @@ Authors: Ido Sefi (208008698), Yoav Vinov (208300954)
 This project tests whether using diffusion as a warm-start for MPPI improves the trade-off between trajectory quality
 and planning latency, and compares denoiser backbones (MLP / CNN / Transformer).
 In this project we study diffusion models for predicting fixed-horizon trajectories for
-navigation in the D4RL PointMaze environment, and compare them to a classical sampling-
-based planner, Model Predictive Path Integral (MPPI). We implement a DDPM-style diffu-
-sion model and evaluate three denoiser backbones: MLP, temporal CNN, and Transformer.
-We focus on a hybrid setting where the diffusion model provides a warm start (initial tra-
-jectory guess) for MPPI under a fixed planning time budget. In our evaluation, MPPI-only
+navigation in the D4RL PointMaze environment, and compare them to a classical sampling based planner, Model Predictive Path Integral (MPPI). We implement a DDPM-style diffusion model and evaluate three denoiser backbones: MLP, temporal CNN, and Transformer.
+We focus on a hybrid setting where the diffusion model provides a warm start (initial trajectory guess) for MPPI under a fixed planning time budget. In our evaluation, MPPI-only
 consistently achieved lower mean episode steps to reach the goal than diffusion warm-started
 MPPI, while CNN and Transformer warm starts outperformed the MLP warm start across
 most replanning settings.
